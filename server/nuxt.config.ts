@@ -30,4 +30,12 @@ export default defineNuxtConfig({
   },
 
   compatibilityDate: '2025-01-01',
+
+  vite: {
+    server: {
+      watch: {
+        ignored: ['**/ws-api/**', '**/shared/**', '**/data/**', '**/scripts/**'],
+      },
+    },
+  },
 });

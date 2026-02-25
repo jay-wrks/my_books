@@ -429,35 +429,7 @@ wss.on('connection', (ws, req) => {
 });
 
 // ---------------------------------------------------------------------------
-// Background jobs
-// ---------------------------------------------------------------------------
-
-// Expire subscriptions every 5 minutes
-setInterval(() => {
-  try { expireOldSubscriptions(); } catch (e) { console.error('[CRON] expireSubscriptions:', e); }
-}, 5 * 60_000);
-
-// Collect metrics every minute
-setInterval(() => {
-  try {
-    const cpus = os.cpus();
-    const cpuPercent = cpus.reduce((acc, cpu) => {
-      const total = Object.values(cpu.times).reduce((a, b) => a + b, 0);
-      return acc + ((total - cpu.times.idle) / total) * 100;
-    }, 0) / cpus.length;
-
-    const mem = os.totalmem();
-    const free = os.freemem();
-    getDb().prepare(`INSERT INTO metrics (cpu_percent, mem_used_mb, mem_total_mb, ws_connections) VALUES (?, ?, ?, ?)`)
-      .run(Math.round(cpuPercent * 10) / 10, Math.round((mem - free) / 1048576), Math.round(mem / 1048576), connections.size);
-
-    // Keep only last 24h of metrics (1440 rows)
-    getDb().prepare(`DELETE FROM metrics WHERE id NOT IN (SELECT id FROM metrics ORDER BY id DESC LIMIT 1440)`).run();
-  } catch (e) { console.error('[CRON] metrics:', e); }
-}, 60_000);
-
-// ---------------------------------------------------------------------------
-// Exports for admin API inter-process queries
+// Exports for admin API
 // ---------------------------------------------------------------------------
 export function getWsStats() {
   return {
@@ -476,54 +448,103 @@ export function getWsStats() {
 export { pushToUser };
 
 // ---------------------------------------------------------------------------
-// Start
+// Lifecycle — startServer / stopServer (called via server/utils/ws-manager.ts)
 // ---------------------------------------------------------------------------
 
-try { initFirebase(); } catch (e) { console.warn('[WS] Firebase init skipped:', (e as any).message); }
+let _started = false;
+let _cronTimers: ReturnType<typeof setInterval>[] = [];
 
-// Init DB on startup
-getDb();
-console.log(`[DB] SQLite ready (WAL mode)`);
+function startCronJobs() {
+  // Expire subscriptions every 5 minutes
+  _cronTimers.push(setInterval(() => {
+    try { expireOldSubscriptions(); } catch (e) { console.error('[CRON] expireSubscriptions:', e); }
+  }, 5 * 60_000));
 
-// ---------------------------------------------------------------------------
-// Graceful shutdown — let PM2 stop cleanly
-// ---------------------------------------------------------------------------
-
-function gracefulShutdown(signal: string) {
-  console.log(`[WS] ${signal} received, shutting down gracefully...`);
-
-  // Stop accepting new connections
-  wss.close(() => {
-    console.log('[WS] WebSocket server closed');
-  });
-
-  // Close all existing connections
-  for (const [ws, conn] of connections) {
+  // Collect metrics every minute
+  _cronTimers.push(setInterval(() => {
     try {
-      push(ws, 'server_shutdown', { message: 'Server restarting, please reconnect' });
-      ws.close(1012, 'Server restarting');
-    } catch {}
-  }
-  connections.clear();
-  rateBuckets.clear();
+      const cpus = os.cpus();
+      const cpuPercent = cpus.reduce((acc, cpu) => {
+        const total = Object.values(cpu.times).reduce((a, b) => a + b, 0);
+        return acc + ((total - cpu.times.idle) / total) * 100;
+      }, 0) / cpus.length;
 
-  // Close HTTP server and exit
-  server.close(() => {
-    console.log('[WS] HTTP server closed');
-    process.exit(0);
-  });
+      const mem = os.totalmem();
+      const free = os.freemem();
+      getDb().prepare(`INSERT INTO metrics (cpu_percent, mem_used_mb, mem_total_mb, ws_connections) VALUES (?, ?, ?, ?)`)
+        .run(Math.round(cpuPercent * 10) / 10, Math.round((mem - free) / 1048576), Math.round(mem / 1048576), connections.size);
 
-  // Force exit after 5s if something hangs
-  setTimeout(() => {
-    console.warn('[WS] Forced exit after timeout');
-    process.exit(1);
-  }, 5000).unref();
+      // Keep only last 24h of metrics (1440 rows)
+      getDb().prepare(`DELETE FROM metrics WHERE id NOT IN (SELECT id FROM metrics ORDER BY id DESC LIMIT 1440)`).run();
+    } catch (e) { console.error('[CRON] metrics:', e); }
+  }, 60_000));
 }
 
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+export function startServer(): Promise<void> {
+  if (_started) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    try { initFirebase(); } catch (e) { console.warn('[WS] Firebase init skipped:', (e as any).message); }
+    getDb();
+    console.log(`[DB] SQLite ready (WAL mode)`);
 
-server.listen(PORT, () => {
-  console.log(`[WS] WebSocket server listening on :${PORT}`);
-  console.log(`[WS] Health check: http://localhost:${PORT}/`);
-});
+    server.listen(PORT, () => {
+      _started = true;
+      startCronJobs();
+      console.log(`[WS] WebSocket server listening on :${PORT}`);
+      console.log(`[WS] Health check: http://localhost:${PORT}/`);
+      resolve();
+    });
+    server.once('error', reject);
+  });
+}
+
+export function stopServer(): Promise<void> {
+  if (!_started) return Promise.resolve();
+  return new Promise((resolve) => {
+    console.log('[WS] Stopping server...');
+
+    // Clear background cron timers
+    _cronTimers.forEach(t => clearInterval(t));
+    _cronTimers = [];
+
+    // Stop accepting new WS connections
+    wss.close(() => { console.log('[WS] WebSocket server closed'); });
+
+    // Close all existing connections
+    for (const [ws] of connections) {
+      try {
+        push(ws, 'server_shutdown', { message: 'Server restarting, please reconnect' });
+        ws.close(1012, 'Server restarting');
+      } catch {}
+    }
+    connections.clear();
+    rateBuckets.clear();
+
+    // Close HTTP server
+    server.close(() => {
+      console.log('[WS] HTTP server closed');
+      _started = false;
+      resolve();
+    });
+
+    // Force resolve after 5s if something hangs
+    setTimeout(() => {
+      console.warn('[WS] Forced stop after timeout');
+      _started = false;
+      resolve();
+    }, 5000).unref();
+  });
+}
+
+export function isServerRunning() { return _started; }
+
+// ---------------------------------------------------------------------------
+// Standalone mode — when run directly via CLI (npx tsx ws-api/index.ts)
+// ---------------------------------------------------------------------------
+
+const isMain = typeof require !== 'undefined' && require.main === module;
+if (isMain) {
+  startServer().catch((e) => { console.error('[WS] Failed to start:', e); process.exit(1); });
+  process.on('SIGINT', () => stopServer().then(() => process.exit(0)));
+  process.on('SIGTERM', () => stopServer().then(() => process.exit(0)));
+}
