@@ -1,0 +1,9 @@
+node_modules/
+.output/
+.nuxt/
+dist/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+.env
+firebase-service-account.json

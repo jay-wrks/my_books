@@ -1,0 +1,8 @@
+{
+  "javascript.validate.enable": false,
+  "typescript.tsdk": "server/node_modules/typescript/lib",
+  "[vue]": {
+    "editor.defaultFormatter": "Vue.volar"
+  },
+  "vue.server.hybridMode": true
+}

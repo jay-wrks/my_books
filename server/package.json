@@ -1,0 +1,33 @@
+{
+  "name": "aravind-server",
+  "private": true,
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "start": "node .output/server/index.mjs",
+    "ws:dev": "tsx ws-api/index.ts",
+    "ws:build": "tsc -p ws-api/tsconfig.json",
+    "ws:start": "node ws-api/dist/ws-api/index.js",
+    "setup": "bash scripts/setup.sh"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.7.0",
+    "firebase-admin": "^13.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "nuxt": "^3.14.0",
+    "uuid": "^11.0.0",
+    "vue": "^3.5.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^25.3.0",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
