@@ -110,7 +110,9 @@ export function getDb(): Database.Database {
     CREATE TABLE IF NOT EXISTS deploy_history (
       id TEXT PRIMARY KEY,
       branch TEXT DEFAULT 'main',
+      deploy_branch TEXT DEFAULT '',
       commit_hash TEXT DEFAULT '',
+      type TEXT DEFAULT 'deploy' CHECK(type IN ('deploy','rollback')),
       status TEXT DEFAULT 'pending' CHECK(status IN ('pending','running','success','failed')),
       log TEXT DEFAULT '',
       duration_ms INTEGER DEFAULT 0,
@@ -139,6 +141,13 @@ export function getDb(): Database.Database {
       ('sub_bio','Biology','eco',9),
       ('sub_comp','Computer Science','computer',10);
   `);
+
+  // Migrations — add columns to existing tables safely
+  const addCol = (table: string, col: string, def: string) => {
+    try { _db!.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); } catch {}
+  };
+  addCol('deploy_history', 'deploy_branch', "TEXT DEFAULT ''");
+  addCol('deploy_history', 'type', "TEXT DEFAULT 'deploy'");
 
   return _db;
 }

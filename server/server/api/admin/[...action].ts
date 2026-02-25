@@ -95,54 +95,252 @@ export default defineEventHandler(async (event) => {
 
     // ===== DEPLOY — Status =====
     if (action === 'deploy/status' && method === 'GET') {
-      let branch = '', commit = '', dirty = false;
+      const cwd = process.cwd();
+      let branch = '', commit = '';
       try {
-        const { stdout: b } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd: process.cwd() });
+        const { stdout: b } = await execAsync('git rev-parse --abbrev-ref HEAD', { cwd });
         branch = b.trim();
-        const { stdout: c } = await execAsync('git rev-parse --short HEAD', { cwd: process.cwd() });
+        const { stdout: c } = await execAsync('git rev-parse --short HEAD', { cwd });
         commit = c.trim();
-        const { stdout: s } = await execAsync('git status --porcelain', { cwd: process.cwd() });
-        dirty = s.trim().length > 0;
       } catch {}
-      const history = getDb().prepare('SELECT * FROM deploy_history ORDER BY created_at DESC LIMIT 20').all();
-      // List remote branches
-      let branches: string[] = [];
+      const history = getDb().prepare('SELECT * FROM deploy_history ORDER BY created_at DESC LIMIT 30').all();
+      // List deploy_* branches from remote
+      let deployBranches: string[] = [];
       try {
-        const { stdout } = await execAsync('git branch -r --format="%(refname:short)"', { cwd: process.cwd() });
-        branches = stdout.trim().split('\n').map(b => b.replace('origin/', '').trim()).filter(Boolean);
+        await execAsync('git fetch origin --prune', { cwd, timeout: 15000 });
+        const { stdout } = await execAsync('git branch -r --format="%(refname:short)"', { cwd });
+        deployBranches = stdout.trim().split('\n')
+          .map(b => b.replace('origin/', '').trim())
+          .filter(b => b.startsWith('deploy_'))
+          .sort().reverse();
       } catch {}
-      return { branch, commit, dirty, branches, history };
+      return { branch, commit, history, deployBranches };
     }
 
-    // ===== DEPLOY — Pull & Restart WS-API =====
-    if (action === 'deploy/pull' && method === 'POST') {
-      const { branch = 'main' } = await readBody(event).catch(() => ({}));
+    // ===== DEPLOY — Deploy from main =====
+    // Flow: clone to temp → build → stop PM2 → copy artifacts → start PM2 → create deploy branch → cleanup
+    if (action === 'deploy/run' && method === 'POST') {
       const db = getDb();
       const deployId = uuid();
       const startTime = Date.now();
-      db.prepare('INSERT INTO deploy_history (id, branch, status) VALUES (?, ?, \'running\')').run(deployId, branch);
+      const cwd = process.cwd();
+      const tempDir = `${cwd}/_deploy_temp`;
+      const logs: string[] = [];
+
+      // Get remote origin URL
+      let originUrl = '';
+      try {
+        const { stdout } = await execAsync('git remote get-url origin', { cwd });
+        originUrl = stdout.trim();
+      } catch {
+        throw createError({ statusCode: 500, message: 'Could not determine git remote origin URL' });
+      }
+
+      db.prepare("INSERT INTO deploy_history (id, branch, type, status) VALUES (?, 'main', 'deploy', 'running')").run(deployId);
 
       try {
-        const cwd = process.cwd();
-        // Git pull
-        const { stdout: pullLog } = await execAsync(`git fetch origin && git checkout ${branch} && git pull origin ${branch}`, { cwd, timeout: 30000 });
-        // Get new commit
-        const { stdout: commitHash } = await execAsync('git rev-parse --short HEAD', { cwd });
-        // Rebuild ws-api only
-        const { stdout: buildLog } = await execAsync('cd ws-api && npm install --production 2>&1 && npx tsc -p tsconfig.json 2>&1', { cwd, timeout: 60000 });
-        // Restart ws-api via PM2
-        const { stdout: pm2Log } = await execAsync('pm2 restart ws-api 2>&1 || echo "PM2 restart skipped"', { cwd, timeout: 10000 });
+        // 1. Clean up any leftover temp dir
+        await execAsync(`rm -rf "${tempDir}"`, { cwd }).catch(() => {});
 
-        const log = [pullLog, buildLog, pm2Log].join('\n---\n');
+        // 2. Shallow clone main branch into temp
+        logs.push('--- Clone main into temp ---');
+        const { stdout: cloneLog } = await execAsync(
+          `git clone --depth 1 --branch main "${originUrl}" "${tempDir}" 2>&1`,
+          { cwd, timeout: 60000 }
+        );
+        logs.push(cloneLog);
+
+        // 3. Get the commit hash from the clone
+        const { stdout: commitHash } = await execAsync('git rev-parse --short HEAD', { cwd: tempDir });
+
+        // 4. Install deps & build everything in temp
+        logs.push('--- Install dependencies ---');
+        const { stdout: installLog } = await execAsync('npm install 2>&1', { cwd: tempDir, timeout: 120000 });
+        logs.push(installLog);
+
+        logs.push('--- Build Nuxt admin UI ---');
+        const { stdout: nuxtLog } = await execAsync('npx nuxt build 2>&1', { cwd: tempDir, timeout: 120000 });
+        logs.push(nuxtLog);
+
+        logs.push('--- Build WS-API ---');
+        const { stdout: wsLog } = await execAsync('npx tsc -p ws-api/tsconfig.json 2>&1', { cwd: tempDir, timeout: 60000 });
+        logs.push(wsLog);
+
+        // 5. Stop both PM2 processes
+        logs.push('--- Stopping PM2 processes ---');
+        const { stdout: stopLog } = await execAsync(
+          'pm2 stop admin-ui ws-api 2>&1 || echo "PM2 stop: some processes may not be running"',
+          { cwd, timeout: 15000 }
+        );
+        logs.push(stopLog);
+
+        // 6. Copy built artifacts over (keep data/, .env, node_modules intact)
+        logs.push('--- Copying built artifacts ---');
+        // Admin UI output
+        await execAsync(`rm -rf "${cwd}/.output" && cp -r "${tempDir}/.output" "${cwd}/.output"`, { cwd, timeout: 30000 });
+        // WS-API dist
+        await execAsync(`rm -rf "${cwd}/ws-api/dist" && cp -r "${tempDir}/ws-api/dist" "${cwd}/ws-api/dist"`, { cwd, timeout: 15000 });
+        // Copy updated source files (shared, server, ws-api src, configs etc.)
+        await execAsync(
+          `cp -r "${tempDir}/shared" "${cwd}/" && ` +
+          `cp -r "${tempDir}/server" "${cwd}/" && ` +
+          `cp -r "${tempDir}/ws-api/index.ts" "${cwd}/ws-api/" && ` +
+          `cp -f "${tempDir}/package.json" "${cwd}/" && ` +
+          `cp -f "${tempDir}/ecosystem.config.cjs" "${cwd}/" && ` +
+          `cp -f "${tempDir}/nuxt.config.ts" "${cwd}/" 2>&1`,
+          { cwd, timeout: 15000 }
+        );
+        logs.push('Artifacts copied successfully');
+
+        // 7. Reinstall production deps in main dir (in case package.json changed)
+        const { stdout: mainInstall } = await execAsync('npm install --production 2>&1', { cwd, timeout: 120000 });
+        logs.push(mainInstall);
+
+        // 8. Start both PM2 processes
+        logs.push('--- Starting PM2 processes ---');
+        const { stdout: startLog } = await execAsync(
+          'pm2 start ecosystem.config.cjs 2>&1',
+          { cwd, timeout: 15000 }
+        );
+        logs.push(startLog);
+
+        // 9. Create deploy branch on origin
+        const now = new Date();
+        const dateStr = `${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, '0')}_${String(now.getDate()).padStart(2, '0')}`;
+        // Find next sequence number for today
+        let seq = 1;
+        try {
+          const { stdout: existing } = await execAsync(
+            `git branch -r --format="%(refname:short)" | grep "origin/deploy_${dateStr}_" | wc -l`,
+            { cwd, timeout: 10000 }
+          );
+          seq = parseInt(existing.trim()) + 1 || 1;
+        } catch {}
+        const deployBranch = `deploy_${dateStr}_${seq}`;
+
+        logs.push(`--- Creating deploy branch: ${deployBranch} ---`);
+        await execAsync(
+          `cd "${tempDir}" && git checkout -b "${deployBranch}" && git push origin "${deployBranch}" 2>&1`,
+          { cwd: tempDir, timeout: 30000 }
+        );
+        logs.push(`Branch ${deployBranch} pushed to origin`);
+
+        // 10. Cleanup temp
+        await execAsync(`rm -rf "${tempDir}"`, { cwd }).catch(() => {});
+
         const duration = Date.now() - startTime;
-        db.prepare('UPDATE deploy_history SET status = ?, commit_hash = ?, log = ?, duration_ms = ? WHERE id = ?')
-          .run('success', commitHash.trim(), log, duration, deployId);
+        db.prepare('UPDATE deploy_history SET status = ?, commit_hash = ?, deploy_branch = ?, log = ?, duration_ms = ? WHERE id = ?')
+          .run('success', commitHash.trim(), deployBranch, logs.join('\n'), duration, deployId);
 
-        return { status: 'success', deployId, duration, commit: commitHash.trim() };
+        return { status: 'success', deployId, duration, commit: commitHash.trim(), deployBranch };
       } catch (e: any) {
+        // Try to restart PM2 even if deploy failed (best effort recovery)
+        await execAsync('pm2 start ecosystem.config.cjs 2>&1', { cwd, timeout: 15000 }).catch(() => {});
+        // Cleanup temp
+        await execAsync(`rm -rf "${tempDir}"`, { cwd }).catch(() => {});
+
         const duration = Date.now() - startTime;
         db.prepare('UPDATE deploy_history SET status = ?, log = ?, duration_ms = ? WHERE id = ?')
-          .run('failed', e.message + '\n' + (e.stderr || ''), duration, deployId);
+          .run('failed', logs.join('\n') + '\n--- ERROR ---\n' + e.message + '\n' + (e.stderr || ''), duration, deployId);
+        throw createError({ statusCode: 500, message: e.message });
+      }
+    }
+
+    // ===== DEPLOY — Rollback to a deploy_* branch =====
+    if (action === 'deploy/rollback' && method === 'POST') {
+      const { deployBranch } = await readBody(event);
+      if (!deployBranch || !/^deploy_\d{4}_\d{2}_\d{2}_\d+$/.test(deployBranch)) {
+        throw createError({ statusCode: 400, message: 'Invalid deploy branch name' });
+      }
+      const db = getDb();
+      const deployId = uuid();
+      const startTime = Date.now();
+      const cwd = process.cwd();
+      const tempDir = `${cwd}/_deploy_temp`;
+      const logs: string[] = [];
+
+      let originUrl = '';
+      try {
+        const { stdout } = await execAsync('git remote get-url origin', { cwd });
+        originUrl = stdout.trim();
+      } catch {
+        throw createError({ statusCode: 500, message: 'Could not determine git remote origin URL' });
+      }
+
+      db.prepare("INSERT INTO deploy_history (id, branch, type, status) VALUES (?, ?, 'rollback', 'running')").run(deployId, deployBranch);
+
+      try {
+        await execAsync(`rm -rf "${tempDir}"`, { cwd }).catch(() => {});
+
+        // Clone the deploy branch
+        logs.push(`--- Clone ${deployBranch} into temp ---`);
+        const { stdout: cloneLog } = await execAsync(
+          `git clone --depth 1 --branch "${deployBranch}" "${originUrl}" "${tempDir}" 2>&1`,
+          { cwd, timeout: 60000 }
+        );
+        logs.push(cloneLog);
+
+        const { stdout: commitHash } = await execAsync('git rev-parse --short HEAD', { cwd: tempDir });
+
+        // Build in temp
+        logs.push('--- Install dependencies ---');
+        const { stdout: installLog } = await execAsync('npm install 2>&1', { cwd: tempDir, timeout: 120000 });
+        logs.push(installLog);
+
+        logs.push('--- Build Nuxt admin UI ---');
+        const { stdout: nuxtLog } = await execAsync('npx nuxt build 2>&1', { cwd: tempDir, timeout: 120000 });
+        logs.push(nuxtLog);
+
+        logs.push('--- Build WS-API ---');
+        const { stdout: wsLog } = await execAsync('npx tsc -p ws-api/tsconfig.json 2>&1', { cwd: tempDir, timeout: 60000 });
+        logs.push(wsLog);
+
+        // Stop PM2
+        logs.push('--- Stopping PM2 processes ---');
+        const { stdout: stopLog } = await execAsync(
+          'pm2 stop admin-ui ws-api 2>&1 || echo "PM2 stop: some processes may not be running"',
+          { cwd, timeout: 15000 }
+        );
+        logs.push(stopLog);
+
+        // Copy artifacts
+        logs.push('--- Copying built artifacts ---');
+        await execAsync(`rm -rf "${cwd}/.output" && cp -r "${tempDir}/.output" "${cwd}/.output"`, { cwd, timeout: 30000 });
+        await execAsync(`rm -rf "${cwd}/ws-api/dist" && cp -r "${tempDir}/ws-api/dist" "${cwd}/ws-api/dist"`, { cwd, timeout: 15000 });
+        await execAsync(
+          `cp -r "${tempDir}/shared" "${cwd}/" && ` +
+          `cp -r "${tempDir}/server" "${cwd}/" && ` +
+          `cp -r "${tempDir}/ws-api/index.ts" "${cwd}/ws-api/" && ` +
+          `cp -f "${tempDir}/package.json" "${cwd}/" && ` +
+          `cp -f "${tempDir}/ecosystem.config.cjs" "${cwd}/" && ` +
+          `cp -f "${tempDir}/nuxt.config.ts" "${cwd}/" 2>&1`,
+          { cwd, timeout: 15000 }
+        );
+        logs.push('Artifacts copied');
+
+        const { stdout: mainInstall } = await execAsync('npm install --production 2>&1', { cwd, timeout: 120000 });
+        logs.push(mainInstall);
+
+        // Start PM2
+        logs.push('--- Starting PM2 processes ---');
+        const { stdout: startLog } = await execAsync('pm2 start ecosystem.config.cjs 2>&1', { cwd, timeout: 15000 });
+        logs.push(startLog);
+
+        // Cleanup temp
+        await execAsync(`rm -rf "${tempDir}"`, { cwd }).catch(() => {});
+
+        const duration = Date.now() - startTime;
+        db.prepare('UPDATE deploy_history SET status = ?, commit_hash = ?, deploy_branch = ?, log = ?, duration_ms = ? WHERE id = ?')
+          .run('success', commitHash.trim(), deployBranch, logs.join('\n'), duration, deployId);
+
+        return { status: 'success', deployId, duration, commit: commitHash.trim(), deployBranch };
+      } catch (e: any) {
+        await execAsync('pm2 start ecosystem.config.cjs 2>&1', { cwd, timeout: 15000 }).catch(() => {});
+        await execAsync(`rm -rf "${tempDir}"`, { cwd }).catch(() => {});
+
+        const duration = Date.now() - startTime;
+        db.prepare('UPDATE deploy_history SET status = ?, log = ?, duration_ms = ? WHERE id = ?')
+          .run('failed', logs.join('\n') + '\n--- ERROR ---\n' + e.message + '\n' + (e.stderr || ''), duration, deployId);
         throw createError({ statusCode: 500, message: e.message });
       }
     }

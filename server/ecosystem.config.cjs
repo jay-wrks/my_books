@@ -24,6 +24,9 @@ module.exports = {
       // Auto-restart on crash
       autorestart: true,
       watch: false,
+      // Give graceful shutdown time to close connections
+      kill_timeout: 8000,
+      listen_timeout: 10000,
     },
   ],
 };

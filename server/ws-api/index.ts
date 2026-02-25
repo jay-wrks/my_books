@@ -485,6 +485,44 @@ try { initFirebase(); } catch (e) { console.warn('[WS] Firebase init skipped:', 
 getDb();
 console.log(`[DB] SQLite ready (WAL mode)`);
 
+// ---------------------------------------------------------------------------
+// Graceful shutdown — let PM2 stop cleanly
+// ---------------------------------------------------------------------------
+
+function gracefulShutdown(signal: string) {
+  console.log(`[WS] ${signal} received, shutting down gracefully...`);
+
+  // Stop accepting new connections
+  wss.close(() => {
+    console.log('[WS] WebSocket server closed');
+  });
+
+  // Close all existing connections
+  for (const [ws, conn] of connections) {
+    try {
+      push(ws, 'server_shutdown', { message: 'Server restarting, please reconnect' });
+      ws.close(1012, 'Server restarting');
+    } catch {}
+  }
+  connections.clear();
+  rateBuckets.clear();
+
+  // Close HTTP server and exit
+  server.close(() => {
+    console.log('[WS] HTTP server closed');
+    process.exit(0);
+  });
+
+  // Force exit after 5s if something hangs
+  setTimeout(() => {
+    console.warn('[WS] Forced exit after timeout');
+    process.exit(1);
+  }, 5000).unref();
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
 server.listen(PORT, () => {
   console.log(`[WS] WebSocket server listening on :${PORT}`);
   console.log(`[WS] Health check: http://localhost:${PORT}/`);
