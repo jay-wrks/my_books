@@ -38,11 +38,34 @@
           <span>Description</span>
           <textarea v-model="form.description" rows="2" placeholder="Brief description of this PDF..."></textarea>
         </label>
-        <label class="span-full">
-          <span>Firebase Storage Path</span>
-          <input v-model="form.firebasePath" placeholder="pdfs/class5/math/chapter1.pdf" />
-          <small>Upload the PDF to Firebase Storage first, then paste the path here</small>
-        </label>
+        <div class="span-full">
+          <span class="field-label">PDF File</span>
+          <div
+            class="upload-zone"
+            :class="{ 'upload-zone-active': dragOver, 'upload-zone-done': form.firebasePath, 'upload-zone-uploading': uploading }"
+            @dragover.prevent="dragOver = true"
+            @dragleave.prevent="dragOver = false"
+            @drop.prevent="onFileDrop"
+            @click="($refs.fileInput as HTMLInputElement)?.click()"
+          >
+            <input ref="fileInput" type="file" accept=".pdf" hidden @change="onFileSelect" />
+            <div v-if="uploading" class="upload-progress">
+              <div class="spinner"></div>
+              <span>Uploading {{ uploadFileName }}...</span>
+            </div>
+            <div v-else-if="form.firebasePath" class="upload-done">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="10" fill="var(--color-success)"/><path d="M6 10l3 3 5-6" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span>{{ form.firebasePath }}</span>
+              <button type="button" class="btn-sm" @click.stop="clearFile">Replace</button>
+            </div>
+            <div v-else class="upload-prompt">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+              <span>Drop PDF here or click to browse</span>
+              <small>Max 50 MB</small>
+            </div>
+          </div>
+          <p v-if="uploadError" class="upload-error">{{ uploadError }}</p>
+        </div>
         <label>
           <span>Thumbnail URL</span>
           <input v-model="form.thumbnailUrl" placeholder="https://..." />
@@ -129,11 +152,83 @@ const form = reactive({
   thumbnailUrl: '', pageCount: 0, fileSizeKb: 0,
 });
 
+const uploading = ref(false);
+const uploadFileName = ref('');
+const uploadError = ref('');
+const dragOver = ref(false);
+const fileInput = ref<HTMLInputElement | null>(null);
+
+function onFileDrop(e: DragEvent) {
+  dragOver.value = false;
+  const file = e.dataTransfer?.files?.[0];
+  if (file) uploadFile(file);
+}
+
+function onFileSelect(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  if (file) uploadFile(file);
+}
+
+function clearFile() {
+  form.firebasePath = '';
+  form.fileSizeKb = 0;
+  uploadError.value = '';
+  if (fileInput.value) fileInput.value.value = '';
+}
+
+async function uploadFile(file: File) {
+  if (!file.name.toLowerCase().endsWith('.pdf')) {
+    uploadError.value = 'Only PDF files are allowed';
+    return;
+  }
+  if (file.size > 50 * 1024 * 1024) {
+    uploadError.value = 'File too large (max 50 MB)';
+    return;
+  }
+
+  // Resolve subject name for the storage path
+  const subjectName = subjects.value.find((s: any) => s.id === form.subjectId)?.name || 'general';
+
+  uploading.value = true;
+  uploadFileName.value = file.name;
+  uploadError.value = '';
+
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('classLevel', String(form.classLevel));
+    fd.append('subjectName', subjectName);
+
+    const token = useCookie('admin_token');
+    const res = await $fetch<any>('/api/admin/pdfs/upload', {
+      method: 'POST',
+      body: fd,
+      headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
+    });
+
+    form.firebasePath = res.firebasePath;
+    form.fileSizeKb = res.fileSizeKb;
+
+    // Auto-fill title from filename if empty
+    if (!form.title) {
+      form.title = file.name.replace(/\.pdf$/i, '').replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    }
+  } catch (e: any) {
+    uploadError.value = e.data?.message || e.message || 'Upload failed';
+  } finally {
+    uploading.value = false;
+  }
+}
+
 function resetForm() {
   Object.assign(form, { title: '', description: '', classLevel: 1, subjectId: '', firebasePath: '', thumbnailUrl: '', pageCount: 0, fileSizeKb: 0 });
   editingId.value = null;
   showForm.value = false;
   formMsg.value = null;
+  uploading.value = false;
+  uploadFileName.value = '';
+  uploadError.value = '';
+  if (fileInput.value) fileInput.value.value = '';
 }
 
 function editPdf(p: any) {
@@ -252,5 +347,109 @@ onMounted(() => { loadPdfs(); loadSubjects(); });
   .form-grid-2 {
     grid-template-columns: 1fr;
   }
+}
+
+/* Upload zone */
+.field-label {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  margin-bottom: 6px;
+}
+
+.upload-zone {
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: var(--color-bg-secondary);
+}
+
+.upload-zone:hover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle, rgba(99, 102, 241, 0.05));
+}
+
+.upload-zone-active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle, rgba(99, 102, 241, 0.08));
+  transform: scale(1.01);
+}
+
+.upload-zone-done {
+  border-style: solid;
+  border-color: var(--color-success);
+  background: var(--color-success-subtle, rgba(34, 197, 94, 0.05));
+  cursor: default;
+}
+
+.upload-zone-uploading {
+  border-color: var(--color-warning, #f59e0b);
+  cursor: wait;
+}
+
+.upload-prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-tertiary);
+}
+
+.upload-prompt span {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.upload-prompt small {
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+
+.upload-done {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+  word-break: break-all;
+}
+
+.upload-done span {
+  flex: 1;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.upload-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: center;
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.upload-error {
+  color: var(--color-danger);
+  font-size: 0.8125rem;
+  margin-top: 6px;
 }
 </style>

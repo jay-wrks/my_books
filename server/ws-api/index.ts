@@ -170,6 +170,9 @@ const handlers: Record<string, Handler> = {
       if (!checkPwd(password, user.password_hash)) return err(ws, rid, 'Invalid email or password');
     }
 
+    // Blocked check
+    if (user.is_blocked) return err(ws, rid, 'ACCOUNT_BLOCKED');
+
     const token = signJwt({ userId: user.id, email: user.email, isAdmin: !!user.is_admin });
     const sessionId = uuid();
     db.prepare(`INSERT INTO sessions (id, user_id, device_info) VALUES (?, ?, ?)`)

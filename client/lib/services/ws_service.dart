@@ -21,7 +21,7 @@ import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 // ===================== CHANGE THIS TO YOUR SERVER DOMAIN =====================
-const String _wsUrl = 'ws://10.139.223.36:3001';
+const String _wsUrl = 'ws://192.168.29.81:3001';
 // For local dev: 'ws://10.0.2.2:3001' (Android emulator) or 'ws://localhost:3001'
 // =============================================================================
 
@@ -31,7 +31,11 @@ class WsService {
   WsService._();
 
   WebSocketChannel? _channel;
+  StreamSubscription? _subscription; // track so we can cancel before closing
+  int _generation = 0; // bumped every _doConnect; stale callbacks ignored
+
   bool _connected = false;
+  bool _hasEverConnected = false;
   bool _disposed = false;
   int _retryDelay = 1;
   String? _authToken;
@@ -49,6 +53,7 @@ class WsService {
   final _connectionController = StreamController<bool>.broadcast();
   Stream<bool> get connectionState => _connectionController.stream;
   bool get isConnected => _connected;
+  bool get hasEverConnected => _hasEverConnected;
 
   Timer? _pingTimer;
   Timer? _reconnectTimer;
@@ -60,34 +65,69 @@ class WsService {
   // ---------------------------------------------------------------------------
   void connect() {
     if (_disposed) return;
+    if (_connected) return; // already connected, don't tear it down
+    _reconnectTimer?.cancel();
     _doConnect();
   }
 
   void _doConnect() {
+    // Bump generation — any callback from a previous generation is stale
+    final gen = ++_generation;
+
+    // Tear down the OLD channel safely: cancel listener FIRST so its onDone
+    // does NOT fire _onDisconnect and schedule a spurious reconnect.
+    _subscription?.cancel();
+    _subscription = null;
     try {
       _channel?.sink.close();
     } catch (_) {}
+    _channel = null;
 
     try {
       _channel = WebSocketChannel.connect(Uri.parse(_wsUrl));
-      _channel!.stream.listen(
-        _onMessage,
-        onDone: _onDisconnect,
-        onError: (_) => _onDisconnect(),
+      _subscription = _channel!.stream.listen(
+        (raw) {
+          if (gen != _generation) return; // stale channel
+          _onMessage(raw);
+        },
+        onDone: () {
+          if (gen != _generation) return; // stale channel
+          _onDisconnect();
+        },
+        onError: (_) {
+          if (gen != _generation) return; // stale channel
+          _onDisconnect();
+        },
       );
-      _connected = true;
       _retryDelay = 1;
-      _connectionController.add(true);
       _startPing();
-      _flushQueue();
-      debugPrint('[WS] Connected');
+      // Send an immediate ping directly on the sink (bypass _connected check)
+      // so the server responds and we can confirm the connection is alive.
+      _channel!.sink.add(jsonEncode({
+        'rid': _uuid.v4(),
+        'action': 'ping',
+        'token': _authToken,
+        'data': {},
+      }));
+      debugPrint('[WS] Channel opened, handshake ping sent...');
     } catch (e) {
       debugPrint('[WS] Connect failed: $e');
       _scheduleReconnect();
     }
   }
 
+  void _markConnected() {
+    if (!_connected) {
+      _connected = true;
+      _hasEverConnected = true;
+      _connectionController.add(true);
+      _flushQueue();
+      debugPrint('[WS] Connected (handshake confirmed)');
+    }
+  }
+
   void _onMessage(dynamic raw) {
+    _markConnected(); // First message confirms connection is alive
     try {
       final msg = jsonDecode(raw as String) as Map<String, dynamic>;
       final rid = msg['rid'] as String?;
@@ -201,6 +241,7 @@ class WsService {
     _disposed = true;
     _pingTimer?.cancel();
     _reconnectTimer?.cancel();
+    _subscription?.cancel();
     _channel?.sink.close();
     _eventController.close();
     _connectionController.close();

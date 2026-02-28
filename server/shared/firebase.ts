@@ -31,6 +31,16 @@ export async function getSignedUrl(firebasePath: string): Promise<string> {
   return url;
 }
 
+export async function uploadToFirebase(storagePath: string, data: Buffer, contentType: string = 'application/pdf'): Promise<void> {
+  initFirebase();
+  const bucket = admin.storage().bucket();
+  const file = bucket.file(storagePath);
+  await file.save(data, {
+    metadata: { contentType },
+    resumable: false,
+  });
+}
+
 export async function backupToFirebase(data: Record<string, any[]>): Promise<string> {
   initFirebase();
   const db = admin.database();

@@ -70,12 +70,27 @@ class PdfService {
   }
 
   // Download PDF from signed URL, encrypt, and cache
-  Future<Uint8List> downloadAndCache(String pdfId, String signedUrl) async {
+  Future<Uint8List> downloadAndCache(String pdfId, String signedUrl, {void Function(double)? onProgress}) async {
     debugPrint('[PDF] Downloading: $pdfId');
-    final response = await http.get(Uri.parse(signedUrl));
-    if (response.statusCode != 200) throw Exception('Download failed: ${response.statusCode}');
+    final request = http.Request('GET', Uri.parse(signedUrl));
+    final streamedResponse = await http.Client().send(request);
+    if (streamedResponse.statusCode != 200) {
+      throw Exception('Download failed: ${streamedResponse.statusCode}');
+    }
 
-    final bytes = response.bodyBytes;
+    final contentLength = streamedResponse.contentLength ?? 0;
+    final chunks = <List<int>>[];
+    int received = 0;
+
+    await for (final chunk in streamedResponse.stream) {
+      chunks.add(chunk);
+      received += chunk.length;
+      if (contentLength > 0 && onProgress != null) {
+        onProgress(received / contentLength);
+      }
+    }
+
+    final bytes = Uint8List.fromList(chunks.expand((c) => c).toList());
 
     // Encrypt and save to cache
     final encrypted = await _xorCrypt(bytes);

@@ -148,6 +148,7 @@ export function getDb(): Database.Database {
   };
   addCol('deploy_history', 'deploy_branch', "TEXT DEFAULT ''");
   addCol('deploy_history', 'type', "TEXT DEFAULT 'deploy'");
+  addCol('users', 'is_blocked', 'INTEGER DEFAULT 0');
 
   return _db;
 }

@@ -15,6 +15,7 @@ import 'ws_service.dart';
 class AuthState {
   final bool isLoading;
   final bool isLoggedIn;
+  final bool isBlocked;
   final String? userId;
   final String? name;
   final String? email;
@@ -26,6 +27,7 @@ class AuthState {
   const AuthState({
     this.isLoading = true,
     this.isLoggedIn = false,
+    this.isBlocked = false,
     this.userId,
     this.name,
     this.email,
@@ -38,6 +40,7 @@ class AuthState {
   AuthState copyWith({
     bool? isLoading,
     bool? isLoggedIn,
+    bool? isBlocked,
     String? userId,
     String? name,
     String? email,
@@ -49,6 +52,7 @@ class AuthState {
     return AuthState(
       isLoading: isLoading ?? this.isLoading,
       isLoggedIn: isLoggedIn ?? this.isLoggedIn,
+      isBlocked: isBlocked ?? this.isBlocked,
       userId: userId ?? this.userId,
       name: name ?? this.name,
       email: email ?? this.email,
@@ -85,6 +89,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
         return;
       } catch (e) {
         debugPrint('[AUTH] Token restore failed: $e');
+        // Check if account was blocked
+        if (e.toString().contains('ACCOUNT_BLOCKED')) {
+          await _storage.delete(key: 'token');
+          state = const AuthState(isLoading: false, isBlocked: true);
+          return;
+        }
         await _storage.delete(key: 'token');
       }
     }
@@ -128,6 +138,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
     _eventSub = _ws.events.listen((event) {
       if (event['event'] == 'subscriptionActivated' || event['event'] == 'subscriptionExpired') {
         refreshSubscription();
+      }
+      if (event['event'] == 'account_blocked') {
+        // Force logout when blocked by admin
+        _storage.delete(key: 'token');
+        _ws.setToken(null);
+        state = const AuthState(isLoading: false, isBlocked: true);
+      }
+      if (event['event'] == 'account_unblocked') {
+        state = state.copyWith(isBlocked: false);
       }
     });
 
@@ -180,6 +199,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
     _ws.setToken(null);
     _eventSub?.cancel();
     state = const AuthState(isLoading: false);
+  }
+
+  /// Clear the blocked flag so the user can try again
+  void clearBlocked() {
+    state = state.copyWith(isBlocked: false);
   }
 }
 

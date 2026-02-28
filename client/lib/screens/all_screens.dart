@@ -1,48 +1,144 @@
 // ============================================================================
-// ALL SCREENS — single file for simplicity
+// ALL SCREENS — Production-level UI
 //
 // Screens: Splash, Login, Register, Home, PdfList, PdfViewer,
 //          SubscribeWall, Profile, Search
+//
+// Design: Matches Aravind web design system — Linear/Vercel-inspired dark theme
+// Features: Stagger animations, shimmer loading, smooth transitions,
+//           layered surfaces, subtle borders, micro-interactions
 // ============================================================================
 
 import 'dart:async';
-import 'dart:typed_data';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:screen_protector/screen_protector.dart';
+import 'package:shimmer/shimmer.dart';
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../main.dart'; // Tok design tokens
 import '../services/ws_service.dart';
 import '../services/auth_service.dart';
 import '../services/pdf_service.dart';
 
 // ===================== CHANGE THIS =====================
-const String _serverDomain = 'http://10.139.223.36:3000';
+const String _serverDomain = 'http://192.168.29.81:3000';
 // =======================================================
 
 final _ws = WsService();
 final _pdf = PdfService();
 
-// ============================================================================
-// SPLASH SCREEN
-// ============================================================================
+// ─── Shared Widgets ─────────────────────────────────────────────────────────
 
-class SplashScreen extends StatelessWidget {
-  const SplashScreen({super.key});
+/// Shimmer skeleton placeholder for loading states
+class _Skeleton extends StatelessWidget {
+  final double width;
+  final double height;
+  final double radius;
+  const _Skeleton({this.width = double.infinity, this.height = 16, this.radius = 6});
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(
+    return Shimmer.fromColors(
+      baseColor: Tok.bgElevated,
+      highlightColor: Tok.bgHover,
+      child: Container(
+        width: width,
+        height: height,
+        decoration: BoxDecoration(
+          color: Tok.bgElevated,
+          borderRadius: BorderRadius.circular(radius),
+        ),
+      ),
+    );
+  }
+}
+
+/// Staggered fade+slide animation for list items
+class _StaggerItem extends StatelessWidget {
+  final int index;
+  final Animation<double> animation;
+  final Widget child;
+  const _StaggerItem({required this.index, required this.animation, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: CurvedAnimation(parent: animation, curve: const Interval(0.0, 1.0, curve: Curves.easeOut)),
+      child: SlideTransition(
+        position: Tween<Offset>(begin: const Offset(0, 0.08), end: Offset.zero)
+            .animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic)),
+        child: child,
+      ),
+    );
+  }
+}
+
+/// Surface card with subtle border — matching web .card
+class _SurfaceCard extends StatelessWidget {
+  final Widget child;
+  final EdgeInsets? padding;
+  final EdgeInsets? margin;
+  final VoidCallback? onTap;
+  const _SurfaceCard({required this.child, this.padding, this.margin, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: margin ?? const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: Tok.bgSurface,
+        borderRadius: BorderRadius.circular(Tok.rLg),
+        border: Border.all(color: Tok.borderSubtle, width: 1),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(Tok.rLg),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(Tok.rLg),
+          onTap: onTap,
+          splashColor: Tok.accentSubtle,
+          highlightColor: Tok.bgHover.withValues(alpha: 0.5),
+          child: padding != null ? Padding(padding: padding!, child: child) : child,
+        ),
+      ),
+    );
+  }
+}
+
+/// Empty state placeholder
+class _EmptyState extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String? subtitle;
+  const _EmptyState({required this.icon, required this.title, this.subtitle});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(40),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('🎓', style: TextStyle(fontSize: 64)),
-            SizedBox(height: 16),
-            Text('Aravind', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Color(0xFF10B981))),
-            SizedBox(height: 24),
-            CircularProgressIndicator(color: Color(0xFF10B981)),
+            Container(
+              width: 64, height: 64,
+              decoration: BoxDecoration(
+                color: Tok.bgElevated,
+                borderRadius: BorderRadius.circular(Tok.rXl),
+                border: Border.all(color: Tok.borderSubtle),
+              ),
+              child: Icon(icon, size: 28, color: Tok.textMuted),
+            ),
+            const SizedBox(height: 20),
+            Text(title, style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600, color: Tok.textSecondary)),
+            if (subtitle != null) ...[
+              const SizedBox(height: 6),
+              Text(subtitle!, style: GoogleFonts.inter(fontSize: 13, color: Tok.textTertiary), textAlign: TextAlign.center),
+            ],
           ],
         ),
       ),
@@ -50,8 +146,319 @@ class SplashScreen extends StatelessWidget {
   }
 }
 
+// ─── Connection Overlay ─────────────────────────────────────────────────────
+// Covers the entire app when disconnected.
+// • No internet  → "No Internet Connection" screen
+// • Internet ok but WS down → "Server Under Maintenance" screen
+// Applied via MaterialApp.builder so it blocks all routes.
+
+enum _ConnStatus { connected, noInternet, maintenance }
+
+class ConnectionOverlay extends StatefulWidget {
+  final Widget child;
+  const ConnectionOverlay({super.key, required this.child});
+  @override
+  State<ConnectionOverlay> createState() => _ConnectionOverlayState();
+}
+
+class _ConnectionOverlayState extends State<ConnectionOverlay> with SingleTickerProviderStateMixin {
+  _ConnStatus _status = _ConnStatus.connected;
+  _ConnStatus _displayStatus = _ConnStatus.connected; // what's actually rendered
+  late final StreamSubscription _wsSub;
+  late final StreamSubscription<List<ConnectivityResult>> _netSub;
+  bool _hasInternet = true;
+  bool _wsConnected = true;
+  late final AnimationController _animCtrl;
+  late final Animation<double> _fadeAnim;
+  Timer? _debounceTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _animCtrl = AnimationController(vsync: this, duration: Tok.slow);
+    _fadeAnim = CurvedAnimation(parent: _animCtrl, curve: Tok.curve);
+
+    _wsConnected = _ws.isConnected;
+    _wsSub = _ws.connectionState.listen((c) {
+      _wsConnected = c;
+      _evaluate();
+    });
+
+    // Initial connectivity check
+    Connectivity().checkConnectivity().then((results) {
+      _hasInternet = !results.contains(ConnectivityResult.none);
+      _evaluate();
+    });
+
+    _netSub = Connectivity().onConnectivityChanged.listen((results) {
+      _hasInternet = !results.contains(ConnectivityResult.none);
+      _evaluate();
+      // When internet comes back, nudge WS to reconnect faster
+      if (_hasInternet && !_wsConnected) {
+        _ws.connect();
+      }
+    });
+  }
+
+  void _evaluate() {
+    // Don't show any overlay until WS has connected at least once.
+    // During startup (splash/login), the app handles errors via its own UI.
+    // The overlay only makes sense once the user is in the app and connection drops.
+    if (!_ws.hasEverConnected) return;
+
+    if (_wsConnected) {
+      _status = _ConnStatus.connected;
+    } else if (!_hasInternet) {
+      _status = _ConnStatus.noInternet;
+    } else {
+      _status = _ConnStatus.maintenance;
+    }
+
+    // Debounce: Only apply the change after it's stable for a moment.
+    // This prevents flicker from rapid connected↔disconnected toggling.
+    _debounceTimer?.cancel();
+
+    if (_status == _ConnStatus.connected && _displayStatus != _ConnStatus.connected) {
+      // Becoming connected → wait 800ms to confirm it's real
+      _debounceTimer = Timer(const Duration(milliseconds: 800), () {
+        if (_status == _ConnStatus.connected && mounted) {
+          _displayStatus = _ConnStatus.connected;
+          setState(() {});
+          _animCtrl.reverse();
+        }
+      });
+    } else if (_status != _ConnStatus.connected && _displayStatus == _ConnStatus.connected) {
+      // Becoming disconnected → show immediately (no delay)
+      _displayStatus = _status;
+      if (mounted) {
+        setState(() {});
+        _animCtrl.forward();
+      }
+    } else if (_status != _displayStatus) {
+      // Switching between noInternet ↔ maintenance
+      if (mounted) {
+        _displayStatus = _status;
+        setState(() {});
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _debounceTimer?.cancel();
+    _wsSub.cancel();
+    _netSub.cancel();
+    _animCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        widget.child,
+        if (_displayStatus != _ConnStatus.connected)
+          FadeTransition(
+            opacity: _fadeAnim,
+            child: _displayStatus == _ConnStatus.noInternet
+                ? const _NoInternetScreen()
+                : const _MaintenanceScreen(),
+          ),
+      ],
+    );
+  }
+}
+
+// ─── No Internet Screen ─────────────────────────────────────────────────────
+class _NoInternetScreen extends StatelessWidget {
+  const _NoInternetScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Tok.bgRoot,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 40),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 88, height: 88,
+                decoration: BoxDecoration(
+                  color: Tok.dangerSubtle,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: Tok.danger.withValues(alpha: 0.2)),
+                ),
+                child: const Icon(Icons.wifi_off_rounded, size: 40, color: Tok.danger),
+              ),
+              const SizedBox(height: 28),
+              Text(
+                'No Internet Connection',
+                style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.w700, color: Tok.textPrimary, letterSpacing: -0.3),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Please check your Wi-Fi or mobile data and try again.',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.inter(fontSize: 14, color: Tok.textTertiary, height: 1.5),
+              ),
+              const SizedBox(height: 32),
+              _PulsingDot(color: Tok.danger),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Server Under Maintenance Screen ────────────────────────────────────────
+class _MaintenanceScreen extends StatelessWidget {
+  const _MaintenanceScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Tok.bgRoot,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 40),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 88, height: 88,
+                decoration: BoxDecoration(
+                  color: Color(0x1FF59E0B), // warning subtle
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: Tok.warning.withValues(alpha: 0.2)),
+                ),
+                child: const Icon(Icons.construction_rounded, size: 40, color: Tok.warning),
+              ),
+              const SizedBox(height: 28),
+              Text(
+                'Server Under Maintenance',
+                style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.w700, color: Tok.textPrimary, letterSpacing: -0.3),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'We\'re performing scheduled maintenance.\nPlease check back shortly.',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.inter(fontSize: 14, color: Tok.textTertiary, height: 1.5),
+              ),
+              const SizedBox(height: 32),
+              _PulsingDot(color: Tok.warning),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Small pulsing dot indicator for status screens
+class _PulsingDot extends StatefulWidget {
+  final Color color;
+  const _PulsingDot({required this.color});
+  @override
+  State<_PulsingDot> createState() => _PulsingDotState();
+}
+
+class _PulsingDotState extends State<_PulsingDot> with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat(reverse: true);
+  }
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _ctrl,
+      child: Container(
+        width: 8, height: 8,
+        decoration: BoxDecoration(color: widget.color, shape: BoxShape.circle),
+      ),
+    );
+  }
+}
+
 // ============================================================================
-// LOGIN SCREEN
+// SPLASH SCREEN — Animated brand reveal
+// ============================================================================
+
+class SplashScreen extends StatefulWidget {
+  const SplashScreen({super.key});
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _scale;
+  late Animation<double> _fade;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 800));
+    _scale = Tween(begin: 0.8, end: 1.0).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack));
+    _fade = Tween(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
+    _ctrl.forward();
+  }
+
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: AnimatedBuilder(
+          animation: _ctrl,
+          builder: (_, __) => Opacity(
+            opacity: _fade.value,
+            child: Transform.scale(
+              scale: _scale.value,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Brand mark — matching web .brand-mark
+                  Container(
+                    width: 72, height: 72,
+                    decoration: BoxDecoration(
+                      color: Tok.accentSubtle,
+                      borderRadius: BorderRadius.circular(Tok.rXl),
+                    ),
+                    child: const Icon(Icons.auto_stories_rounded, size: 36, color: Tok.accent),
+                  ),
+                  const SizedBox(height: 24),
+                  Text('Aravind', style: GoogleFonts.inter(
+                    fontSize: 28, fontWeight: FontWeight.w700, color: Tok.textPrimary, letterSpacing: -0.5,
+                  )),
+                  const SizedBox(height: 6),
+                  Text('Study Materials', style: GoogleFonts.inter(fontSize: 14, color: Tok.textTertiary)),
+                  const SizedBox(height: 40),
+                  const SizedBox(
+                    width: 24, height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2.5, color: Tok.accent),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// LOGIN SCREEN — Clean, centered form matching web login page
 // ============================================================================
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -60,12 +467,28 @@ class LoginScreen extends ConsumerStatefulWidget {
   ConsumerState<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends ConsumerState<LoginScreen> {
+class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProviderStateMixin {
   final _emailC = TextEditingController();
   final _passC = TextEditingController();
   bool _loading = false;
   String? _error;
   bool _obscure = true;
+  late AnimationController _animCtrl;
+  late Animation<double> _fadeAnim;
+  late Animation<Offset> _slideAnim;
+
+  @override
+  void initState() {
+    super.initState();
+    _animCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
+    _fadeAnim = CurvedAnimation(parent: _animCtrl, curve: Curves.easeOut);
+    _slideAnim = Tween<Offset>(begin: const Offset(0, 0.05), end: Offset.zero)
+        .animate(CurvedAnimation(parent: _animCtrl, curve: Curves.easeOutCubic));
+    _animCtrl.forward();
+  }
+
+  @override
+  void dispose() { _animCtrl.dispose(); _emailC.dispose(); _passC.dispose(); super.dispose(); }
 
   Future<void> _login() async {
     if (_emailC.text.isEmpty || _passC.text.isEmpty) {
@@ -79,7 +502,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         password: _passC.text,
       );
     } catch (e) {
-      setState(() => _error = e.toString());
+      final msg = e.toString();
+      if (msg.contains('ACCOUNT_BLOCKED')) {
+        // AuthGate will show the blocked screen
+        ref.read(authProvider.notifier).clearBlocked();
+        setState(() => _error = 'Your account has been blocked. Contact support.');
+      } else {
+        setState(() => _error = msg.replaceAll('WsError: ', ''));
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -89,50 +519,108 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: 60),
-              const Center(child: Text('🎓', style: TextStyle(fontSize: 56))),
-              const SizedBox(height: 12),
-              const Center(child: Text('Aravind', style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Color(0xFF10B981)))),
-              const Center(child: Text('Study Materials', style: TextStyle(color: Colors.grey))),
-              const SizedBox(height: 48),
-              TextField(
-                controller: _emailC,
-                keyboardType: TextInputType.emailAddress,
-                decoration: const InputDecoration(hintText: 'Email', prefixIcon: Icon(Icons.email_outlined)),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _passC,
-                obscureText: _obscure,
-                decoration: InputDecoration(
-                  hintText: 'Password',
-                  prefixIcon: const Icon(Icons.lock_outline),
-                  suffixIcon: IconButton(
-                    icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility),
-                    onPressed: () => setState(() => _obscure = !_obscure),
-                  ),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 28),
+            child: FadeTransition(
+              opacity: _fadeAnim,
+              child: SlideTransition(
+                position: _slideAnim,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Brand mark
+                    Center(
+                      child: Container(
+                        width: 56, height: 56,
+                        decoration: BoxDecoration(
+                          color: Tok.accentSubtle,
+                          borderRadius: BorderRadius.circular(Tok.rLg),
+                        ),
+                        child: const Icon(Icons.auto_stories_rounded, size: 28, color: Tok.accent),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Text('Aravind', textAlign: TextAlign.center,
+                      style: GoogleFonts.inter(fontSize: 24, fontWeight: FontWeight.w700, letterSpacing: -0.5)),
+                    const SizedBox(height: 4),
+                    Text('Sign in to your account', textAlign: TextAlign.center,
+                      style: GoogleFonts.inter(fontSize: 14, color: Tok.textTertiary)),
+                    const SizedBox(height: 36),
+
+                    // Email label + input
+                    Text('Email address', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500, color: Tok.textSecondary)),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: _emailC,
+                      keyboardType: TextInputType.emailAddress,
+                      textInputAction: TextInputAction.next,
+                      style: GoogleFonts.inter(fontSize: 14),
+                      decoration: const InputDecoration(hintText: 'you@example.com'),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Password label + input
+                    Text('Password', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500, color: Tok.textSecondary)),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: _passC,
+                      obscureText: _obscure,
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: (_) => _login(),
+                      style: GoogleFonts.inter(fontSize: 14),
+                      decoration: InputDecoration(
+                        hintText: 'Enter your password',
+                        suffixIcon: GestureDetector(
+                          onTap: () => setState(() => _obscure = !_obscure),
+                          child: Icon(
+                            _obscure ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                            size: 20, color: Tok.textMuted,
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // Error message
+                    if (_error != null) ...[
+                      const SizedBox(height: 14),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Tok.dangerSubtle,
+                          borderRadius: BorderRadius.circular(Tok.rMd),
+                          border: Border.all(color: Tok.danger.withValues(alpha: 0.3)),
+                        ),
+                        child: Text(_error!, style: GoogleFonts.inter(fontSize: 13, color: Tok.danger), textAlign: TextAlign.center),
+                      ),
+                    ],
+
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      height: 46,
+                      child: ElevatedButton(
+                        onPressed: _loading ? null : _login,
+                        child: _loading
+                            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                            : Text('Sign in', style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600)),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text("Don't have an account? ", style: GoogleFonts.inter(fontSize: 13, color: Tok.textTertiary)),
+                        GestureDetector(
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen())),
+                          child: Text('Register', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600, color: Tok.accentText)),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
-              if (_error != null) ...[
-                const SizedBox(height: 12),
-                Text(_error!, style: const TextStyle(color: Colors.redAccent), textAlign: TextAlign.center),
-              ],
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: _loading ? null : _login,
-                child: _loading ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Login'),
-              ),
-              const SizedBox(height: 16),
-              TextButton(
-                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RegisterScreen())),
-                child: const Text("Don't have an account? Register", style: TextStyle(color: Color(0xFF10B981))),
-              ),
-            ],
+            ),
           ),
         ),
       ),
@@ -188,6 +676,23 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     }
   }
 
+  Widget _field(String label, TextEditingController ctrl, {TextInputType? keyboard, bool obscure = false, String? hint, bool required_ = false}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('$label${required_ ? ' *' : ''}', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500, color: Tok.textSecondary)),
+        const SizedBox(height: 6),
+        TextField(
+          controller: ctrl,
+          keyboardType: keyboard,
+          obscureText: obscure,
+          style: GoogleFonts.inter(fontSize: 14),
+          decoration: InputDecoration(hintText: hint),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -197,29 +702,47 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(controller: _nameC, decoration: const InputDecoration(hintText: 'Full Name *', prefixIcon: Icon(Icons.person_outline))),
-            const SizedBox(height: 12),
-            TextField(controller: _emailC, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(hintText: 'Email *', prefixIcon: Icon(Icons.email_outlined))),
-            const SizedBox(height: 12),
-            TextField(controller: _phoneC, keyboardType: TextInputType.phone, decoration: const InputDecoration(hintText: 'Phone (optional)', prefixIcon: Icon(Icons.phone_outlined))),
-            const SizedBox(height: 12),
-            TextField(controller: _passC, obscureText: true, decoration: const InputDecoration(hintText: 'Password * (min 6 chars)', prefixIcon: Icon(Icons.lock_outline))),
-            const SizedBox(height: 12),
-            TextField(controller: _confirmC, obscureText: true, decoration: const InputDecoration(hintText: 'Confirm Password *', prefixIcon: Icon(Icons.lock_outline))),
+            _field('Full Name', _nameC, hint: 'John Doe', required_: true),
+            const SizedBox(height: 16),
+            _field('Email', _emailC, hint: 'you@example.com', keyboard: TextInputType.emailAddress, required_: true),
+            const SizedBox(height: 16),
+            _field('Phone', _phoneC, hint: '+91 xxxxx xxxxx', keyboard: TextInputType.phone),
+            const SizedBox(height: 16),
+            _field('Password', _passC, hint: 'Min 6 characters', obscure: true, required_: true),
+            const SizedBox(height: 16),
+            _field('Confirm Password', _confirmC, hint: 'Re-enter password', obscure: true, required_: true),
+
             if (_error != null) ...[
-              const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.redAccent), textAlign: TextAlign.center),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Tok.dangerSubtle,
+                  borderRadius: BorderRadius.circular(Tok.rMd),
+                  border: Border.all(color: Tok.danger.withValues(alpha: 0.3)),
+                ),
+                child: Text(_error!, style: GoogleFonts.inter(fontSize: 13, color: Tok.danger), textAlign: TextAlign.center),
+              ),
             ],
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: _loading ? null : _register,
-              child: _loading ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Register'),
+
+            const SizedBox(height: 24),
+            SizedBox(
+              height: 46,
+              child: ElevatedButton(
+                onPressed: _loading ? null : _register,
+                child: _loading
+                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : Text('Create Account', style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600)),
+              ),
             ),
           ],
         ),
       ),
     );
   }
+
+  @override
+  void dispose() { _nameC.dispose(); _emailC.dispose(); _phoneC.dispose(); _passC.dispose(); _confirmC.dispose(); super.dispose(); }
 }
 
 // ============================================================================
@@ -232,32 +755,42 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
-  int _tab = 0;
+class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStateMixin {
   List<dynamic> _subjects = [];
   List<dynamic> _classes = [];
-  bool _loading = true;
-  bool _wsConnected = true;
-  StreamSubscription? _connSub;
+  bool _initialLoading = true; // only true until first successful load
+
+  // Stagger animation controllers
+  late AnimationController _listAnimCtrl;
+  late TabController _tabCtrl;
 
   @override
   void initState() {
     super.initState();
-    _wsConnected = _ws.isConnected;
-    _connSub = _ws.connectionState.listen((connected) {
-      if (mounted) setState(() => _wsConnected = connected);
+    _tabCtrl = TabController(length: 2, vsync: this);
+    _tabCtrl.addListener(() {
+      if (!_tabCtrl.indexIsChanging) {
+        _playStagger();
+      }
     });
+    _listAnimCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
     _load();
   }
 
   @override
   void dispose() {
-    _connSub?.cancel();
+    _listAnimCtrl.dispose();
+    _tabCtrl.dispose();
     super.dispose();
   }
 
+  void _playStagger() {
+    _listAnimCtrl.reset();
+    _listAnimCtrl.forward();
+  }
+
   Future<void> _load() async {
-    setState(() => _loading = true);
+    // Don't set loading on refresh — keep existing data visible
     try {
       final results = await Future.wait([
         _ws.send('getSubjects', {}),
@@ -268,71 +801,126 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     } catch (e) {
       debugPrint('[HOME] Load failed: $e');
     }
-    if (mounted) setState(() => _loading = false);
+    if (mounted) {
+      setState(() => _initialLoading = false);
+      _playStagger();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
+    final topPad = MediaQuery.of(context).padding.top;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('🎓 Aravind', style: TextStyle(color: Color(0xFF10B981), fontWeight: FontWeight.bold)),
-        actions: [
-          // Subscription badge
-          Container(
-            margin: const EdgeInsets.only(right: 4),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: auth.hasActiveSubscription ? const Color(0xFF059669) : Colors.red.shade900,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              auth.hasActiveSubscription ? '✅ PRO' : '🔒 FREE',
-              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-            ),
-          ),
-          IconButton(icon: const Icon(Icons.search), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SearchScreen()))),
-          IconButton(icon: const Icon(Icons.person_outline), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen()))),
-        ],
-      ),
       body: Column(
         children: [
-          // Connection status banner
-          if (!_wsConnected)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 6),
-              color: Colors.red.shade900,
-              child: const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.cloud_off, size: 14, color: Colors.white70),
-                  SizedBox(width: 6),
-                  Text('No connection — retrying...', style: TextStyle(fontSize: 12, color: Colors.white70)),
-                ],
-              ),
+          // ─── Custom App Bar ──────────────────────────────────
+          Container(
+            padding: EdgeInsets.only(top: topPad + 12, left: 20, right: 12, bottom: 0),
+            color: Tok.bgRoot,
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    // Brand
+                    Container(
+                      width: 36, height: 36,
+                      decoration: BoxDecoration(
+                        color: Tok.accentSubtle,
+                        borderRadius: BorderRadius.circular(Tok.rMd),
+                      ),
+                      child: const Icon(Icons.auto_stories_rounded, size: 18, color: Tok.accent),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Aravind', style: GoogleFonts.inter(
+                            fontSize: 18, fontWeight: FontWeight.w700, color: Tok.textPrimary, letterSpacing: -0.3,
+                          )),
+                        ],
+                      ),
+                    ),
+
+                    // Subscription badge
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: auth.hasActiveSubscription ? Tok.accentSubtle : Tok.dangerSubtle,
+                        borderRadius: BorderRadius.circular(Tok.rSm),
+                        border: Border.all(
+                          color: auth.hasActiveSubscription ? Tok.accent.withValues(alpha: 0.3) : Tok.danger.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Text(
+                        auth.hasActiveSubscription ? 'PRO' : 'FREE',
+                        style: GoogleFonts.inter(
+                          fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.5,
+                          color: auth.hasActiveSubscription ? Tok.accent : Tok.danger,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+
+                    // Search
+                    _AppBarAction(
+                      icon: Icons.search_rounded,
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SearchScreen())),
+                    ),
+
+                    // Profile
+                    _AppBarAction(
+                      icon: Icons.person_outline_rounded,
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen())),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // ─── Tab Bar ─────────────────────────────────────
+                Container(
+                  decoration: const BoxDecoration(
+                    border: Border(bottom: BorderSide(color: Tok.borderSubtle, width: 1)),
+                  ),
+                  child: TabBar(
+                    controller: _tabCtrl,
+                    indicatorColor: Tok.accent,
+                    indicatorWeight: 2,
+                    indicatorSize: TabBarIndicatorSize.tab,
+                    labelColor: Tok.textPrimary,
+                    unselectedLabelColor: Tok.textMuted,
+                    labelStyle: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+                    unselectedLabelStyle: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w500),
+                    dividerHeight: 0,
+                    splashFactory: InkSparkle.splashFactory,
+                    tabs: const [
+                      Tab(text: 'By Class'),
+                      Tab(text: 'By Subject'),
+                    ],
+                  ),
+                ),
+              ],
             ),
+          ),
+
+          // ─── Content ─────────────────────────────────────────
           Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator(color: Color(0xFF10B981)))
+            child: _initialLoading
+                ? _buildShimmerList()
                 : RefreshIndicator(
+                    color: Tok.accent,
+                    backgroundColor: Tok.bgSurface,
                     onRefresh: () async {
                       await _load();
                       ref.read(authProvider.notifier).refreshSubscription();
                     },
-                    child: Column(
+                    child: TabBarView(
+                      controller: _tabCtrl,
                       children: [
-                        // Tab bar
-                        Row(
-                          children: [
-                            _tabButton('By Class', 0),
-                            _tabButton('By Subject', 1),
-                          ],
-                        ),
-                        Expanded(
-                          child: _tab == 0 ? _buildClassView() : _buildSubjectView(),
-                        ),
+                        _buildClassView(),
+                        _buildSubjectView(),
                       ],
                     ),
                   ),
@@ -342,47 +930,95 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  Widget _tabButton(String label, int index) {
-    final selected = _tab == index;
-    return Expanded(
-      child: GestureDetector(
-        onTap: () => setState(() => _tab = index),
+  Widget _buildShimmerList() {
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: 8,
+      itemBuilder: (_, __) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 14),
+          padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            border: Border(bottom: BorderSide(color: selected ? const Color(0xFF10B981) : Colors.transparent, width: 2)),
+            color: Tok.bgSurface,
+            borderRadius: BorderRadius.circular(Tok.rLg),
+            border: Border.all(color: Tok.borderSubtle),
           ),
-          child: Text(label, textAlign: TextAlign.center,
-            style: TextStyle(fontWeight: FontWeight.w600, color: selected ? const Color(0xFF10B981) : Colors.grey)),
+          child: const Row(
+            children: [
+              _Skeleton(width: 44, height: 44, radius: 10),
+              SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _Skeleton(width: 120, height: 14),
+                    SizedBox(height: 8),
+                    _Skeleton(width: 80, height: 11),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
   Widget _buildClassView() {
-    if (_classes.isEmpty) return const Center(child: Text('No classes available', style: TextStyle(color: Colors.grey)));
-    // Build sorted list of all class levels from actual data
+    if (_classes.isEmpty) return const _EmptyState(icon: Icons.school_outlined, title: 'No classes available', subtitle: 'Pull down to refresh');
     final classLevels = _classes.map<int>((c) => c['class_level'] as int).toList()..sort();
     return ListView.builder(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(16),
       itemCount: classLevels.length,
       itemBuilder: (context, i) {
         final classLevel = classLevels[i];
         final classData = _classes.firstWhere((c) => c['class_level'] == classLevel, orElse: () => null);
         final count = classData?['pdf_count'] ?? 0;
-        return Card(
-          margin: const EdgeInsets.only(bottom: 8),
-          child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: const Color(0xFF059669),
-              child: Text('$classLevel', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-            ),
-            title: Text('Class $classLevel', style: const TextStyle(fontWeight: FontWeight.w600)),
-            subtitle: Text('$count PDFs available', style: const TextStyle(color: Colors.grey, fontSize: 13)),
-            trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+        final delay = (i * 0.08).clamp(0.0, 0.6);
+        return _StaggerItem(
+          index: i,
+          animation: CurvedAnimation(
+            parent: _listAnimCtrl,
+            curve: Interval(delay, (delay + 0.4).clamp(0.0, 1.0), curve: Curves.easeOutCubic),
+          ),
+          child: _SurfaceCard(
+            margin: const EdgeInsets.only(bottom: 10),
             onTap: count > 0 ? () => Navigator.push(context, MaterialPageRoute(
               builder: (_) => PdfListScreen(classLevel: classLevel, subjects: _subjects),
             )) : null,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              child: Row(
+                children: [
+                  // Class number badge
+                  Container(
+                    width: 44, height: 44,
+                    decoration: BoxDecoration(
+                      color: Tok.accentSubtle,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Center(
+                      child: Text('$classLevel', style: GoogleFonts.inter(
+                        fontSize: 18, fontWeight: FontWeight.w700, color: Tok.accent,
+                      )),
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Class $classLevel', style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600, color: Tok.textPrimary)),
+                        const SizedBox(height: 3),
+                        Text('$count PDFs available', style: GoogleFonts.inter(fontSize: 13, color: Tok.textTertiary)),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right_rounded, color: count > 0 ? Tok.textMuted : Tok.borderDefault, size: 22),
+                ],
+              ),
+            ),
           ),
         );
       },
@@ -390,33 +1026,74 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildSubjectView() {
-    if (_subjects.isEmpty) return const Center(child: Text('No subjects available', style: TextStyle(color: Colors.grey)));
+    if (_subjects.isEmpty) return const _EmptyState(icon: Icons.book_outlined, title: 'No subjects available', subtitle: 'Pull down to refresh');
     return GridView.builder(
-      padding: const EdgeInsets.all(12),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, childAspectRatio: 1.4, crossAxisSpacing: 10, mainAxisSpacing: 10),
+      padding: const EdgeInsets.all(16),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 2, childAspectRatio: 1.3, crossAxisSpacing: 10, mainAxisSpacing: 10,
+      ),
       itemCount: _subjects.length,
       itemBuilder: (context, i) {
         final s = _subjects[i];
-        return Card(
-          child: InkWell(
-            borderRadius: BorderRadius.circular(12),
+        final delay = (i * 0.06).clamp(0.0, 0.6);
+        return _StaggerItem(
+          index: i,
+          animation: CurvedAnimation(
+            parent: _listAnimCtrl,
+            curve: Interval(delay, (delay + 0.4).clamp(0.0, 1.0), curve: Curves.easeOutCubic),
+          ),
+          child: _SurfaceCard(
+            margin: EdgeInsets.zero,
             onTap: () => Navigator.push(context, MaterialPageRoute(
               builder: (_) => PdfListScreen(subjectId: s['id'], subjectName: s['name']),
             )),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(_getSubjectIcon(s['icon_name'] ?? ''), size: 32, color: const Color(0xFF10B981)),
-                  const SizedBox(height: 8),
-                  Text(s['name'] ?? '', textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                ],
-              ),
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  width: 44, height: 44,
+                  decoration: BoxDecoration(
+                    color: Tok.accentSubtle,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(_getSubjectIcon(s['icon_name'] ?? ''), size: 22, color: Tok.accent),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  s['name'] ?? '',
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 13, color: Tok.textPrimary),
+                ),
+              ],
             ),
           ),
         );
       },
+    );
+  }
+}
+
+/// App bar icon button
+class _AppBarAction extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  const _AppBarAction({required this.icon, required this.onTap});
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(Tok.rMd),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(Tok.rMd),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Icon(icon, size: 22, color: Tok.textSecondary),
+        ),
+      ),
     );
   }
 }
@@ -429,7 +1106,7 @@ class PdfListScreen extends ConsumerStatefulWidget {
   final int? classLevel;
   final String? subjectId;
   final String? subjectName;
-  final List<dynamic>? subjects; // passed when coming from class view
+  final List<dynamic>? subjects;
 
   const PdfListScreen({super.key, this.classLevel, this.subjectId, this.subjectName, this.subjects});
 
@@ -437,22 +1114,30 @@ class PdfListScreen extends ConsumerStatefulWidget {
   ConsumerState<PdfListScreen> createState() => _PdfListScreenState();
 }
 
-class _PdfListScreenState extends ConsumerState<PdfListScreen> {
+class _PdfListScreenState extends ConsumerState<PdfListScreen> with SingleTickerProviderStateMixin {
   List<dynamic> _pdfs = [];
-  bool _loading = true;
+  bool _initialLoading = true; // only true until first load completes
   String? _selectedSubjectId;
   int _page = 1;
   int _total = 0;
+  late AnimationController _staggerCtrl;
 
   @override
   void initState() {
     super.initState();
+    _staggerCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
     _selectedSubjectId = widget.subjectId;
     _loadPdfs();
   }
 
-  Future<void> _loadPdfs() async {
-    setState(() => _loading = true);
+  @override
+  void dispose() { _staggerCtrl.dispose(); super.dispose(); }
+
+  Future<void> _loadPdfs({bool isFilterChange = false}) async {
+    // Show shimmer only on very first load, or when filter/page changed and we have no data
+    if (_initialLoading || isFilterChange) {
+      setState(() => _initialLoading = true);
+    }
     try {
       final res = await _ws.send('getPdfs', {
         if (widget.classLevel != null) 'classLevel': widget.classLevel,
@@ -465,11 +1150,15 @@ class _PdfListScreenState extends ConsumerState<PdfListScreen> {
     } catch (e) {
       debugPrint('[PDF_LIST] Load failed: $e');
     }
-    if (mounted) setState(() => _loading = false);
+    if (mounted) {
+      setState(() => _initialLoading = false);
+      _staggerCtrl.reset();
+      _staggerCtrl.forward();
+    }
   }
 
   String get _title {
-    if (widget.classLevel != null && widget.subjectName != null) return 'Class ${widget.classLevel} - ${widget.subjectName}';
+    if (widget.classLevel != null && widget.subjectName != null) return 'Class ${widget.classLevel} — ${widget.subjectName}';
     if (widget.classLevel != null) return 'Class ${widget.classLevel}';
     if (widget.subjectName != null) return widget.subjectName!;
     return 'PDFs';
@@ -478,56 +1167,88 @@ class _PdfListScreenState extends ConsumerState<PdfListScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(_title)),
-      body: Column(
-        children: [
-          // Subject filter chips (when viewing by class)
-          if (widget.classLevel != null && widget.subjects != null && widget.subjects!.isNotEmpty)
-            SizedBox(
-              height: 50,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                children: [
-                  _chipButton('All', null),
-                  ...widget.subjects!.map((s) => _chipButton(s['name'], s['id'])),
-                ],
-              ),
-            ),
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator(color: Color(0xFF10B981)))
-                : _pdfs.isEmpty
-                    ? const Center(child: Text('No PDFs found', style: TextStyle(color: Colors.grey)))
-                    : ListView.builder(
-                        padding: const EdgeInsets.all(12),
-                        itemCount: _pdfs.length + 1, // +1 for pagination footer
-                        itemBuilder: (context, i) {
-                          if (i < _pdfs.length) return _pdfCard(_pdfs[i]);
-                          // Pagination footer
-                          final totalPages = (_total / 30).ceil();
-                          if (totalPages <= 1) return const SizedBox.shrink();
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                IconButton(
-                                  onPressed: _page > 1 ? () { _page--; _loadPdfs(); } : null,
-                                  icon: const Icon(Icons.chevron_left),
-                                ),
-                                Text('Page $_page of $totalPages', style: const TextStyle(color: Colors.grey)),
-                                IconButton(
-                                  onPressed: _page < totalPages ? () { _page++; _loadPdfs(); } : null,
-                                  icon: const Icon(Icons.chevron_right),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
+      appBar: AppBar(
+        title: Text(_title),
+        bottom: (widget.classLevel != null && widget.subjects != null && widget.subjects!.isNotEmpty)
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(52),
+                child: SizedBox(
+                  height: 52,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                    children: [
+                      _chipButton('All', null),
+                      ...widget.subjects!.map((s) => _chipButton(s['name'], s['id'])),
+                    ],
+                  ),
+                ),
+              )
+            : null,
+      ),
+      body: _initialLoading
+          ? _buildShimmer()
+          : _pdfs.isEmpty
+              ? const _EmptyState(icon: Icons.description_outlined, title: 'No PDFs found', subtitle: 'Try a different filter')
+              : RefreshIndicator(
+                  color: Tok.accent,
+                  backgroundColor: Tok.bgSurface,
+                  onRefresh: () async => _loadPdfs(),
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _pdfs.length + 1,
+                    itemBuilder: (context, i) {
+                      if (i < _pdfs.length) {
+                        final delay = (i * 0.06).clamp(0.0, 0.6);
+                        return _StaggerItem(
+                          index: i,
+                          animation: CurvedAnimation(
+                            parent: _staggerCtrl,
+                            curve: Interval(delay, (delay + 0.4).clamp(0.0, 1.0), curve: Curves.easeOutCubic),
+                          ),
+                          child: _pdfCard(_pdfs[i]),
+                        );
+                      }
+                      final totalPages = (_total / 30).ceil();
+                      if (totalPages <= 1) return const SizedBox.shrink();
+                      return _paginationFooter(totalPages);
+                    },
+                  ),
+                ),
+    );
+  }
+
+  Widget _buildShimmer() {
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: 10,
+      itemBuilder: (_, __) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Tok.bgSurface,
+            borderRadius: BorderRadius.circular(Tok.rLg),
+            border: Border.all(color: Tok.borderSubtle),
           ),
-        ],
+          child: const Row(
+            children: [
+              _Skeleton(width: 44, height: 54, radius: 8),
+              SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _Skeleton(width: 160, height: 14),
+                    SizedBox(height: 10),
+                    _Skeleton(width: 100, height: 11),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -538,47 +1259,102 @@ class _PdfListScreenState extends ConsumerState<PdfListScreen> {
       onTap: () {
         _selectedSubjectId = subjectId;
         _page = 1;
-        _loadPdfs();
+        _loadPdfs(isFilterChange: true);
       },
-      child: Container(
+      child: AnimatedContainer(
+        duration: Tok.fast,
         margin: const EdgeInsets.only(right: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFF059669) : const Color(0xFF1F1F1F),
+          color: selected ? Tok.accent : Tok.bgSurface,
           borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: selected ? Tok.accent : Tok.borderDefault),
         ),
-        child: Text(label, style: TextStyle(fontSize: 13, color: selected ? Colors.white : Colors.grey, fontWeight: selected ? FontWeight.w600 : FontWeight.normal)),
+        child: Text(label, style: GoogleFonts.inter(
+          fontSize: 13,
+          color: selected ? Colors.white : Tok.textSecondary,
+          fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+        )),
       ),
     );
   }
 
   Widget _pdfCard(dynamic pdf) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        leading: Container(
-          width: 44, height: 56,
-          decoration: BoxDecoration(color: const Color(0xFF1F1F1F), borderRadius: BorderRadius.circular(8)),
-          child: const Icon(Icons.picture_as_pdf, color: Color(0xFF10B981)),
+    return _SurfaceCard(
+      margin: const EdgeInsets.only(bottom: 10),
+      onTap: () => _openPdf(context, pdf),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            // PDF thumbnail placeholder
+            Container(
+              width: 44, height: 54,
+              decoration: BoxDecoration(
+                color: Tok.bgElevated,
+                borderRadius: BorderRadius.circular(Tok.rMd),
+                border: Border.all(color: Tok.borderSubtle),
+              ),
+              child: const Icon(Icons.description_outlined, color: Tok.accent, size: 22),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(pdf['title'] ?? '', style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 14, color: Tok.textPrimary),
+                    maxLines: 2, overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      _MetaBadge(label: 'Class ${pdf['class_level']}'),
+                      const SizedBox(width: 6),
+                      _MetaBadge(label: pdf['subject_name'] ?? '', color: Tok.accent),
+                      if (pdf['page_count'] != null && pdf['page_count'] > 0) ...[
+                        const SizedBox(width: 6),
+                        Text('${pdf['page_count']}p', style: GoogleFonts.inter(fontSize: 11, color: Tok.textMuted)),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Icon(Icons.chevron_right_rounded, color: Tok.textMuted, size: 20),
+          ],
         ),
-        title: Text(pdf['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Row(
-            children: [
-              Text('Class ${pdf['class_level']}', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-              const SizedBox(width: 8),
-              Text(pdf['subject_name'] ?? '', style: const TextStyle(fontSize: 12, color: Color(0xFF10B981))),
-              if (pdf['page_count'] != null && pdf['page_count'] > 0) ...[
-                const SizedBox(width: 8),
-                Text('${pdf['page_count']} pages', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-              ],
-            ],
+      ),
+    );
+  }
+
+  Widget _paginationFooter(int totalPages) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _PaginationButton(
+            icon: Icons.chevron_left_rounded,
+            enabled: _page > 1,
+            onTap: () { _page--; _loadPdfs(isFilterChange: true); },
           ),
-        ),
-        trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-        onTap: () => _openPdf(context, pdf),
+          const SizedBox(width: 16),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              color: Tok.bgSurface,
+              borderRadius: BorderRadius.circular(Tok.rSm),
+              border: Border.all(color: Tok.borderSubtle),
+            ),
+            child: Text('$_page / $totalPages', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500, color: Tok.textSecondary)),
+          ),
+          const SizedBox(width: 16),
+          _PaginationButton(
+            icon: Icons.chevron_right_rounded,
+            enabled: _page < totalPages,
+            onTap: () { _page++; _loadPdfs(isFilterChange: true); },
+          ),
+        ],
       ),
     );
   }
@@ -593,6 +1369,53 @@ class _PdfListScreenState extends ConsumerState<PdfListScreen> {
       pdfId: pdf['id'],
       title: pdf['title'] ?? 'PDF',
     )));
+  }
+}
+
+/// Small metadata badge
+class _MetaBadge extends StatelessWidget {
+  final String label;
+  final Color? color;
+  const _MetaBadge({required this.label, this.color});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: (color ?? Tok.textMuted).withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(label, style: GoogleFonts.inter(
+        fontSize: 11, fontWeight: FontWeight.w500, color: color ?? Tok.textTertiary,
+      )),
+    );
+  }
+}
+
+/// Pagination button
+class _PaginationButton extends StatelessWidget {
+  final IconData icon;
+  final bool enabled;
+  final VoidCallback onTap;
+  const _PaginationButton({required this.icon, required this.enabled, required this.onTap});
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: enabled ? Tok.bgSurface : Tok.bgPrimary,
+      borderRadius: BorderRadius.circular(Tok.rMd),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(Tok.rMd),
+        onTap: enabled ? onTap : null,
+        child: Container(
+          width: 36, height: 36,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(Tok.rMd),
+            border: Border.all(color: enabled ? Tok.borderDefault : Tok.borderSubtle),
+          ),
+          child: Icon(icon, size: 20, color: enabled ? Tok.textSecondary : Tok.textMuted),
+        ),
+      ),
+    );
   }
 }
 
@@ -614,6 +1437,7 @@ class _PdfViewerScreenState extends ConsumerState<PdfViewerScreen> {
   Uint8List? _pdfBytes;
   bool _loading = true;
   String? _error;
+  double _progress = 0.0; // 0.0 to 1.0
 
   @override
   void initState() {
@@ -636,19 +1460,16 @@ class _PdfViewerScreenState extends ConsumerState<PdfViewerScreen> {
 
   Future<void> _loadPdf() async {
     try {
-      // First check cache
       final cached = await _pdf.loadFromCache(widget.pdfId);
       if (cached != null) {
         setState(() { _pdfBytes = cached; _loading = false; });
         return;
       }
-
-      // Get signed URL from server
       final res = await _ws.send('getPdfUrl', {'pdfId': widget.pdfId});
       final url = res['url'] as String;
-
-      // Download, encrypt, cache, return decrypted bytes
-      final bytes = await _pdf.downloadAndCache(widget.pdfId, url);
+      final bytes = await _pdf.downloadAndCache(widget.pdfId, url, onProgress: (p) {
+        if (mounted) setState(() => _progress = p);
+      });
       if (mounted) setState(() { _pdfBytes = bytes; _loading = false; });
     } catch (e) {
       final msg = e.toString();
@@ -676,39 +1497,77 @@ class _PdfViewerScreenState extends ConsumerState<PdfViewerScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.title, style: const TextStyle(fontSize: 16)),
-        // NO share/download/print buttons
+        title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
       ),
       body: _loading
-          ? const Center(
+          ? Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  CircularProgressIndicator(color: Color(0xFF10B981)),
-                  SizedBox(height: 16),
-                  Text('Loading PDF...', style: TextStyle(color: Colors.grey)),
+                  SizedBox(
+                    width: 72, height: 72,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        SizedBox(
+                          width: 72, height: 72,
+                          child: CircularProgressIndicator(
+                            value: _progress > 0 ? _progress : null,
+                            strokeWidth: 3,
+                            color: Tok.accent,
+                            backgroundColor: Tok.bgElevated,
+                          ),
+                        ),
+                        if (_progress > 0)
+                          Text(
+                            '${(_progress * 100).toInt()}%',
+                            style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600, color: Tok.accent),
+                          )
+                        else
+                          const Icon(Icons.picture_as_pdf_rounded, size: 24, color: Tok.accent),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    _progress > 0 ? 'Downloading PDF...' : 'Loading PDF...',
+                    style: GoogleFonts.inter(fontSize: 14, color: Tok.textTertiary),
+                  ),
                 ],
               ),
             )
           : _error != null
               ? Center(
                   child: Padding(
-                    padding: const EdgeInsets.all(32),
+                    padding: const EdgeInsets.all(40),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.error_outline, size: 48, color: Colors.redAccent),
-                        const SizedBox(height: 16),
-                        Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.redAccent)),
-                        const SizedBox(height: 16),
-                        ElevatedButton(onPressed: () { setState(() { _loading = true; _error = null; }); _loadPdf(); }, child: const Text('Retry')),
+                        Container(
+                          width: 64, height: 64,
+                          decoration: BoxDecoration(
+                            color: Tok.dangerSubtle,
+                            borderRadius: BorderRadius.circular(Tok.rXl),
+                          ),
+                          child: const Icon(Icons.error_outline_rounded, size: 28, color: Tok.danger),
+                        ),
+                        const SizedBox(height: 20),
+                        Text(_error!, textAlign: TextAlign.center, style: GoogleFonts.inter(fontSize: 14, color: Tok.textSecondary)),
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          height: 42,
+                          child: ElevatedButton.icon(
+                            onPressed: () { setState(() { _loading = true; _error = null; }); _loadPdf(); },
+                            icon: const Icon(Icons.refresh_rounded, size: 18),
+                            label: const Text('Retry'),
+                          ),
+                        ),
                       ],
                     ),
                   ),
                 )
               : Stack(
                   children: [
-                    // PDF Viewer
                     SfPdfViewer.memory(
                       _pdfBytes!,
                       canShowScrollHead: true,
@@ -716,7 +1575,6 @@ class _PdfViewerScreenState extends ConsumerState<PdfViewerScreen> {
                       enableDoubleTapZooming: true,
                       pageSpacing: 4,
                     ),
-                    // Watermark overlay — user email diagonal across screen
                     Positioned.fill(
                       child: IgnorePointer(
                         child: CustomPaint(
@@ -730,7 +1588,6 @@ class _PdfViewerScreenState extends ConsumerState<PdfViewerScreen> {
   }
 }
 
-// Watermark painter — draws email diagonally across every visible area
 class _WatermarkPainter extends CustomPainter {
   final String text;
   _WatermarkPainter(this.text);
@@ -741,21 +1598,19 @@ class _WatermarkPainter extends CustomPainter {
       text: TextSpan(
         text: text,
         style: TextStyle(
-          color: Colors.grey.withOpacity(0.12),
-          fontSize: 18,
+          color: Colors.grey.withValues(alpha: 0.10),
+          fontSize: 16,
           fontWeight: FontWeight.w600,
+          letterSpacing: 1,
         ),
       ),
       textDirection: TextDirection.ltr,
     );
     textPainter.layout();
-
     canvas.save();
-    canvas.rotate(-0.5); // ~30 degrees
-
-    final w = textPainter.width + 80;
-    final h = textPainter.height + 60;
-
+    canvas.rotate(-0.5);
+    final w = textPainter.width + 100;
+    final h = textPainter.height + 70;
     for (double y = -size.height; y < size.height * 2; y += h) {
       for (double x = -size.width; x < size.width * 2; x += w) {
         textPainter.paint(canvas, Offset(x, y));
@@ -769,89 +1624,145 @@ class _WatermarkPainter extends CustomPainter {
 }
 
 // ============================================================================
-// SUBSCRIBE WALL SCREEN — shown when non-subscribed user taps a PDF
+// SUBSCRIBE WALL SCREEN
 // ============================================================================
 
-class SubscribeWallScreen extends ConsumerWidget {
+class SubscribeWallScreen extends ConsumerStatefulWidget {
   const SubscribeWallScreen({super.key});
+  @override
+  ConsumerState<SubscribeWallScreen> createState() => _SubscribeWallScreenState();
+}
+
+class _SubscribeWallScreenState extends ConsumerState<SubscribeWallScreen> with SingleTickerProviderStateMixin {
+  late AnimationController _animCtrl;
+  @override
+  void initState() {
+    super.initState();
+    _animCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 700))..forward();
+  }
+  @override
+  void dispose() { _animCtrl.dispose(); super.dispose(); }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Subscribe')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const SizedBox(height: 20),
-            const Icon(Icons.lock_outline, size: 64, color: Color(0xFF10B981)),
-            const SizedBox(height: 16),
-            const Text('Unlock All Study Materials',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            const Text('Subscribe to access all PDFs from Class 1-12 across all subjects.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey)),
-            const SizedBox(height: 32),
-            // Price card
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: const Color(0xFF111111),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFF059669), width: 2),
-              ),
-              child: Column(
-                children: [
-                  const Text('Monthly Plan', style: TextStyle(fontSize: 16, color: Colors.grey)),
-                  const SizedBox(height: 8),
-                  const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
+        child: FadeTransition(
+          opacity: CurvedAnimation(parent: _animCtrl, curve: Curves.easeOut),
+          child: SlideTransition(
+            position: Tween<Offset>(begin: const Offset(0, 0.04), end: Offset.zero)
+                .animate(CurvedAnimation(parent: _animCtrl, curve: Curves.easeOutCubic)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const SizedBox(height: 20),
+                // Lock icon
+                Center(
+                  child: Container(
+                    width: 80, height: 80,
+                    decoration: BoxDecoration(
+                      color: Tok.accentSubtle,
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    child: const Icon(Icons.lock_open_rounded, size: 36, color: Tok.accent),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text('Unlock All Study Materials',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.inter(fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: -0.5)),
+                const SizedBox(height: 8),
+                Text('Subscribe to access all PDFs from Class 1-12\nacross all subjects.',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.inter(fontSize: 14, color: Tok.textTertiary, height: 1.5)),
+                const SizedBox(height: 32),
+
+                // Price card
+                Container(
+                  padding: const EdgeInsets.all(28),
+                  decoration: BoxDecoration(
+                    color: Tok.bgSurface,
+                    borderRadius: BorderRadius.circular(Tok.rXl),
+                    border: Border.all(color: Tok.accent.withValues(alpha: 0.4), width: 1.5),
+                  ),
+                  child: Column(
                     children: [
-                      Text('₹', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF10B981))),
-                      Text('199', style: TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Color(0xFF10B981))),
-                      Text('/mo', style: TextStyle(fontSize: 14, color: Colors.grey)),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Tok.accentSubtle,
+                          borderRadius: BorderRadius.circular(Tok.rSm),
+                        ),
+                        child: Text('MONTHLY', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w700, color: Tok.accent, letterSpacing: 0.8)),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text('₹', style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.w700, color: Tok.accent)),
+                          ),
+                          Text('199', style: GoogleFonts.inter(fontSize: 48, fontWeight: FontWeight.w800, color: Tok.textPrimary, letterSpacing: -2, height: 1)),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 24),
+                            child: Text('/mo', style: GoogleFonts.inter(fontSize: 14, color: Tok.textMuted)),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 24),
+                      // Features
+                      ...[
+                        ('All PDFs (Class 1-12)', Icons.check_circle_rounded),
+                        ('All subjects included', Icons.check_circle_rounded),
+                        ('New materials weekly', Icons.check_circle_rounded),
+                        ('Cancel anytime', Icons.check_circle_rounded),
+                      ].map((f) => Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Row(
+                          children: [
+                            Icon(f.$2, size: 18, color: Tok.accent),
+                            const SizedBox(width: 10),
+                            Text(f.$1, style: GoogleFonts.inter(fontSize: 14, color: Tok.textSecondary)),
+                          ],
+                        ),
+                      )),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  ...[
-                    '✅ All PDFs (Class 1-12)',
-                    '✅ All subjects included',
-                    '✅ New materials weekly',
-                    '✅ Cancel anytime',
-                  ].map((f) => Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Text(f, style: const TextStyle(fontSize: 14)),
-                  )),
-                ],
-              ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      final url = '$_serverDomain/subscribe?userId=${auth.userId}';
+                      if (await canLaunchUrl(Uri.parse(url))) {
+                        await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Tok.rMd)),
+                    ),
+                    child: Text('Subscribe Now', style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w700)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextButton(
+                  onPressed: () {
+                    ref.read(authProvider.notifier).refreshSubscription();
+                    Navigator.pop(context);
+                  },
+                  child: Text('Already subscribed? Refresh status',
+                    style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500, color: Tok.accentText)),
+                ),
+              ],
             ),
-            const SizedBox(height: 24),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(padding: const EdgeInsets.all(16)),
-              onPressed: () async {
-                // Open subscribe page in browser
-                final url = '$_serverDomain/subscribe?userId=${auth.userId}';
-                if (await canLaunchUrl(Uri.parse(url))) {
-                  await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
-                }
-              },
-              child: const Text('Subscribe Now', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            ),
-            const SizedBox(height: 12),
-            TextButton(
-              onPressed: () {
-                ref.read(authProvider.notifier).refreshSubscription();
-                Navigator.pop(context);
-              },
-              child: const Text('Already subscribed? Refresh status', style: TextStyle(color: Color(0xFF10B981))),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -868,33 +1779,46 @@ class SearchScreen extends ConsumerStatefulWidget {
   ConsumerState<SearchScreen> createState() => _SearchScreenState();
 }
 
-class _SearchScreenState extends ConsumerState<SearchScreen> {
+class _SearchScreenState extends ConsumerState<SearchScreen> with SingleTickerProviderStateMixin {
   final _searchC = TextEditingController();
   List<dynamic> _results = [];
-  bool _loading = false;
+  bool _searching = false; // subtle inline indicator, not a full-screen swap
   bool _searched = false;
   bool _loadingMore = false;
   int _page = 1;
   int _total = 0;
   String _lastQuery = '';
   Timer? _debounce;
+  late AnimationController _staggerCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _staggerCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 500));
+  }
 
   void _search(String query) {
     _debounce?.cancel();
     if (query.length < 2) {
-      setState(() { _results = []; _searched = false; _page = 1; _total = 0; });
+      setState(() { _results = []; _searched = false; _page = 1; _total = 0; _searching = false; });
       return;
     }
+    // Show inline indicator only if we have no results yet
+    if (_results.isEmpty) setState(() => _searching = true);
     _debounce = Timer(const Duration(milliseconds: 400), () async {
-      setState(() { _loading = true; _page = 1; });
       _lastQuery = query;
+      _page = 1;
       try {
         final res = await _ws.send('searchPdfs', {'query': query, 'page': 1, 'limit': 30});
         _results = res['pdfs'] as List? ?? [];
         _total = res['total'] as int? ?? 0;
         _searched = true;
       } catch (_) {}
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _searching = false);
+        _staggerCtrl.reset();
+        _staggerCtrl.forward();
+      }
     });
   }
 
@@ -916,49 +1840,66 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        titleSpacing: 0,
         title: TextField(
           controller: _searchC,
           autofocus: true,
-          decoration: const InputDecoration(
+          style: GoogleFonts.inter(fontSize: 15, color: Tok.textPrimary),
+          decoration: InputDecoration(
             hintText: 'Search PDFs...',
+            hintStyle: GoogleFonts.inter(color: Tok.textMuted),
             border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
             filled: false,
+            contentPadding: const EdgeInsets.symmetric(vertical: 14),
           ),
           onChanged: _search,
         ),
+        actions: [
+          if (_searchC.text.isNotEmpty)
+            _AppBarAction(
+              icon: Icons.close_rounded,
+              onTap: () {
+                _searchC.clear();
+                _search('');
+              },
+            ),
+        ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator(color: Color(0xFF10B981)))
-          : !_searched
-              ? const Center(child: Text('Type at least 2 characters to search', style: TextStyle(color: Colors.grey)))
+      body: _searching && _results.isEmpty
+          ? const Center(child: SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5, color: Tok.accent)))
+          : !_searched && _results.isEmpty
+              ? _EmptyState(icon: Icons.search_rounded, title: 'Search PDFs', subtitle: 'Type at least 2 characters')
               : _results.isEmpty
-                  ? const Center(child: Text('No results found', style: TextStyle(color: Colors.grey)))
+                  ? const _EmptyState(icon: Icons.search_off_rounded, title: 'No results found', subtitle: 'Try different keywords')
                   : ListView.builder(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(16),
                       itemCount: _results.length + (_results.length < _total ? 1 : 0),
                       itemBuilder: (context, i) {
                         if (i >= _results.length) {
-                          // Load more button
                           return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            padding: const EdgeInsets.symmetric(vertical: 16),
                             child: Center(
                               child: _loadingMore
-                                  ? const CircularProgressIndicator(color: Color(0xFF10B981), strokeWidth: 2)
+                                  ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5, color: Tok.accent))
                                   : TextButton(
                                       onPressed: _loadMore,
-                                      child: const Text('Load more results', style: TextStyle(color: Color(0xFF10B981))),
+                                      child: Text('Load more results', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500)),
                                     ),
                             ),
                           );
                         }
                         final pdf = _results[i];
-                        return Card(
-                          margin: const EdgeInsets.only(bottom: 8),
-                          child: ListTile(
-                            leading: const Icon(Icons.picture_as_pdf, color: Color(0xFF10B981)),
-                            title: Text(pdf['title'] ?? ''),
-                            subtitle: Text('Class ${pdf['class_level']} • ${pdf['subject_name'] ?? ''}',
-                                style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                        final delay = (i * 0.05).clamp(0.0, 0.5);
+                        return _StaggerItem(
+                          index: i,
+                          animation: CurvedAnimation(
+                            parent: _staggerCtrl,
+                            curve: Interval(delay, (delay + 0.4).clamp(0.0, 1.0), curve: Curves.easeOutCubic),
+                          ),
+                          child: _SurfaceCard(
+                            margin: const EdgeInsets.only(bottom: 10),
                             onTap: () {
                               final auth = ref.read(authProvider);
                               if (!auth.hasActiveSubscription) {
@@ -967,6 +1908,35 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                                 Navigator.push(context, MaterialPageRoute(builder: (_) => PdfViewerScreen(pdfId: pdf['id'], title: pdf['title'] ?? 'PDF')));
                               }
                             },
+                            child: Padding(
+                              padding: const EdgeInsets.all(14),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    width: 40, height: 40,
+                                    decoration: BoxDecoration(
+                                      color: Tok.accentSubtle,
+                                      borderRadius: BorderRadius.circular(Tok.rMd),
+                                    ),
+                                    child: const Icon(Icons.description_outlined, size: 20, color: Tok.accent),
+                                  ),
+                                  const SizedBox(width: 14),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(pdf['title'] ?? '', style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 14, color: Tok.textPrimary),
+                                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                                        const SizedBox(height: 4),
+                                        Text('Class ${pdf['class_level']} · ${pdf['subject_name'] ?? ''}',
+                                          style: GoogleFonts.inter(fontSize: 12, color: Tok.textTertiary)),
+                                      ],
+                                    ),
+                                  ),
+                                  const Icon(Icons.chevron_right_rounded, size: 20, color: Tok.textMuted),
+                                ],
+                              ),
+                            ),
                           ),
                         );
                       },
@@ -978,6 +1948,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   void dispose() {
     _debounce?.cancel();
     _searchC.dispose();
+    _staggerCtrl.dispose();
     super.dispose();
   }
 }
@@ -992,7 +1963,17 @@ class ProfileScreen extends ConsumerStatefulWidget {
   ConsumerState<ProfileScreen> createState() => _ProfileScreenState();
 }
 
-class _ProfileScreenState extends ConsumerState<ProfileScreen> {
+class _ProfileScreenState extends ConsumerState<ProfileScreen> with SingleTickerProviderStateMixin {
+  late AnimationController _animCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _animCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 500))..forward();
+  }
+  @override
+  void dispose() { _animCtrl.dispose(); super.dispose(); }
+
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
@@ -1001,96 +1982,167 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
       appBar: AppBar(title: const Text('Profile')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Avatar
-            Center(
-              child: CircleAvatar(
-                radius: 40,
-                backgroundColor: const Color(0xFF059669),
-                child: Text(
-                  (auth.name ?? 'U')[0].toUpperCase(),
-                  style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Center(child: Text(auth.name ?? '', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
-            Center(child: Text(auth.email ?? '', style: const TextStyle(color: Colors.grey))),
-            const SizedBox(height: 24),
-
-            // Subscription status
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF111111),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: auth.hasActiveSubscription ? const Color(0xFF059669) : Colors.red.shade900),
-              ),
-              child: Row(
-                children: [
-                  Icon(auth.hasActiveSubscription ? Icons.check_circle : Icons.lock, color: auth.hasActiveSubscription ? const Color(0xFF10B981) : Colors.redAccent, size: 32),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(auth.hasActiveSubscription ? 'Active Subscription' : 'No Active Subscription',
-                          style: TextStyle(fontWeight: FontWeight.w600, color: auth.hasActiveSubscription ? const Color(0xFF10B981) : Colors.redAccent)),
-                        if (auth.subExpiresAt != null)
-                          Text('Expires: ${auth.subExpiresAt!.substring(0, 10)}', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                      ],
+        child: FadeTransition(
+          opacity: CurvedAnimation(parent: _animCtrl, curve: Curves.easeOut),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // ─── Avatar + Info ────────────────────────────────
+              Center(
+                child: Container(
+                  width: 80, height: 80,
+                  decoration: BoxDecoration(
+                    color: Tok.accentSubtle,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: Tok.accent.withValues(alpha: 0.3)),
+                  ),
+                  child: Center(
+                    child: Text(
+                      (auth.name ?? 'U')[0].toUpperCase(),
+                      style: GoogleFonts.inter(fontSize: 32, fontWeight: FontWeight.w700, color: Tok.accent),
                     ),
                   ),
-                  if (!auth.hasActiveSubscription)
-                    TextButton(
-                      onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SubscribeWallScreen())),
-                      child: const Text('Subscribe'),
-                    ),
-                ],
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
+              const SizedBox(height: 16),
+              Center(child: Text(auth.name ?? '', style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.w700, letterSpacing: -0.3))),
+              const SizedBox(height: 4),
+              Center(child: Text(auth.email ?? '', style: GoogleFonts.inter(fontSize: 14, color: Tok.textTertiary))),
+              const SizedBox(height: 28),
 
-            // Actions
-            _profileTile(Icons.edit_outlined, 'Edit Profile', () => _showEditProfile(context)),
-            _profileTile(Icons.refresh, 'Refresh Subscription', () async {
-              await ref.read(authProvider.notifier).refreshSubscription();
-              if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Subscription status refreshed')));
-            }),
-            _profileTile(Icons.delete_outline, 'Clear PDF Cache', () async {
-              await _pdf.clearCache();
-              if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cache cleared')));
-            }),
-            _profileTile(Icons.lock_outline, 'Change Password', () => _showChangePassword(context)),
-            const SizedBox(height: 24),
-            OutlinedButton.icon(
-              onPressed: () async {
-                await ref.read(authProvider.notifier).logout();
-                if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
-              },
-              icon: const Icon(Icons.logout, color: Colors.redAccent),
-              label: const Text('Logout', style: TextStyle(color: Colors.redAccent)),
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: Colors.redAccent),
-                padding: const EdgeInsets.all(14),
+              // ─── Subscription Status Card ────────────────────
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Tok.bgSurface,
+                  borderRadius: BorderRadius.circular(Tok.rLg),
+                  border: Border.all(color: auth.hasActiveSubscription ? Tok.accent.withValues(alpha: 0.3) : Tok.danger.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 44, height: 44,
+                      decoration: BoxDecoration(
+                        color: auth.hasActiveSubscription ? Tok.accentSubtle : Tok.dangerSubtle,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        auth.hasActiveSubscription ? Icons.verified_rounded : Icons.lock_rounded,
+                        color: auth.hasActiveSubscription ? Tok.accent : Tok.danger, size: 22,
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            auth.hasActiveSubscription ? 'Active Subscription' : 'No Subscription',
+                            style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 14,
+                              color: auth.hasActiveSubscription ? Tok.accent : Tok.danger),
+                          ),
+                          if (auth.subExpiresAt != null) ...[
+                            const SizedBox(height: 2),
+                            Text('Expires: ${auth.subExpiresAt!.substring(0, 10)}',
+                              style: GoogleFonts.inter(fontSize: 12, color: Tok.textMuted)),
+                          ],
+                        ],
+                      ),
+                    ),
+                    if (!auth.hasActiveSubscription)
+                      SizedBox(
+                        height: 34,
+                        child: ElevatedButton(
+                          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SubscribeWallScreen())),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 14),
+                            textStyle: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600),
+                          ),
+                          child: const Text('Upgrade'),
+                        ),
+                      ),
+                  ],
+                ),
               ),
-            ),
-          ],
+
+              const SizedBox(height: 24),
+
+              // ─── Section label ────────────────────────────────
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10, left: 4),
+                child: Text('SETTINGS', style: GoogleFonts.inter(
+                  fontSize: 11, fontWeight: FontWeight.w600, color: Tok.textMuted, letterSpacing: 0.8,
+                )),
+              ),
+
+              // Actions
+              _profileTile(Icons.edit_outlined, 'Edit Profile', 'Update name and phone', () => _showEditProfile(context)),
+              _profileTile(Icons.sync_rounded, 'Refresh Subscription', 'Check subscription status', () async {
+                await ref.read(authProvider.notifier).refreshSubscription();
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Subscription status refreshed')));
+              }),
+              _profileTile(Icons.delete_sweep_outlined, 'Clear PDF Cache', 'Free up storage space', () async {
+                await _pdf.clearCache();
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cache cleared')));
+              }),
+              _profileTile(Icons.lock_outline_rounded, 'Change Password', 'Update your password', () => _showChangePassword(context)),
+
+              const SizedBox(height: 28),
+
+              // Logout
+              SizedBox(
+                height: 46,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    await ref.read(authProvider.notifier).logout();
+                    if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
+                  },
+                  icon: const Icon(Icons.logout_rounded, size: 18, color: Tok.danger),
+                  label: Text('Log out', style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w500, color: Tok.danger)),
+                  style: OutlinedButton.styleFrom(
+                    side: BorderSide(color: Tok.danger.withValues(alpha: 0.3)),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Tok.rMd)),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _profileTile(IconData icon, String label, VoidCallback onTap) {
-    return Card(
+  Widget _profileTile(IconData icon, String label, String subtitle, VoidCallback onTap) {
+    return _SurfaceCard(
       margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        leading: Icon(icon, color: const Color(0xFF10B981)),
-        title: Text(label),
-        trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-        onTap: onTap,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            Container(
+              width: 38, height: 38,
+              decoration: BoxDecoration(
+                color: Tok.bgElevated,
+                borderRadius: BorderRadius.circular(Tok.rMd),
+                border: Border.all(color: Tok.borderSubtle),
+              ),
+              child: Icon(icon, size: 18, color: Tok.textSecondary),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w500, color: Tok.textPrimary)),
+                  const SizedBox(height: 2),
+                  Text(subtitle, style: GoogleFonts.inter(fontSize: 12, color: Tok.textMuted)),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right_rounded, size: 20, color: Tok.textMuted),
+          ],
+        ),
       ),
     );
   }
@@ -1102,14 +2154,18 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF111111),
         title: const Text('Edit Profile'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TextField(controller: nameC, decoration: const InputDecoration(hintText: 'Full Name')),
-            const SizedBox(height: 12),
-            TextField(controller: phoneC, keyboardType: TextInputType.phone, decoration: const InputDecoration(hintText: 'Phone')),
+            Text('Full Name', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500, color: Tok.textSecondary)),
+            const SizedBox(height: 6),
+            TextField(controller: nameC, style: GoogleFonts.inter(fontSize: 14)),
+            const SizedBox(height: 16),
+            Text('Phone', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500, color: Tok.textSecondary)),
+            const SizedBox(height: 6),
+            TextField(controller: phoneC, keyboardType: TextInputType.phone, style: GoogleFonts.inter(fontSize: 14)),
           ],
         ),
         actions: [
@@ -1126,7 +2182,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Profile updated!')));
                 }
               } catch (e) {
-                if (ctx.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Colors.red));
+                if (ctx.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Tok.danger));
               }
             },
             child: const Text('Save'),
@@ -1142,14 +2198,19 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF111111),
         title: const Text('Change Password'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            TextField(controller: currentC, obscureText: true, decoration: const InputDecoration(hintText: 'Current Password')),
-            const SizedBox(height: 12),
-            TextField(controller: newC, obscureText: true, decoration: const InputDecoration(hintText: 'New Password (min 6 chars)')),
+            Text('Current Password', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500, color: Tok.textSecondary)),
+            const SizedBox(height: 6),
+            TextField(controller: currentC, obscureText: true, style: GoogleFonts.inter(fontSize: 14)),
+            const SizedBox(height: 16),
+            Text('New Password', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500, color: Tok.textSecondary)),
+            const SizedBox(height: 6),
+            TextField(controller: newC, obscureText: true, style: GoogleFonts.inter(fontSize: 14),
+              decoration: const InputDecoration(hintText: 'Min 6 characters')),
           ],
         ),
         actions: [
@@ -1166,10 +2227,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password changed!')));
                 }
               } catch (e) {
-                if (ctx.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Colors.red));
+                if (ctx.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Tok.danger));
               }
             },
-            child: const Text('Change'),
+            child: const Text('Update'),
           ),
         ],
       ),
@@ -1183,15 +2244,15 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
 IconData _getSubjectIcon(String name) {
   switch (name) {
-    case 'calculate': return Icons.calculate;
-    case 'science': return Icons.science;
-    case 'translate': return Icons.translate;
-    case 'public': return Icons.public;
-    case 'language': return Icons.language;
-    case 'bolt': return Icons.bolt;
-    case 'biotech': return Icons.biotech;
-    case 'eco': return Icons.eco;
-    case 'computer': return Icons.computer;
-    default: return Icons.book;
+    case 'calculate': return Icons.calculate_rounded;
+    case 'science': return Icons.science_rounded;
+    case 'translate': return Icons.translate_rounded;
+    case 'public': return Icons.public_rounded;
+    case 'language': return Icons.language_rounded;
+    case 'bolt': return Icons.bolt_rounded;
+    case 'biotech': return Icons.biotech_rounded;
+    case 'eco': return Icons.eco_rounded;
+    case 'computer': return Icons.computer_rounded;
+    default: return Icons.menu_book_rounded;
   }
 }

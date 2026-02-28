@@ -4,7 +4,7 @@
 // ============================================================================
 
 import { getDb, getTableNames, getAllData, restoreAllData, getTableRowCount, getActiveSubscription, expireOldSubscriptions } from '../../../shared/db';
-import { backupToFirebase, listBackups, getBackupData } from '../../../shared/firebase';
+import { backupToFirebase, listBackups, getBackupData, uploadToFirebase } from '../../../shared/firebase';
 import { hashPwd, checkPwd, signJwt } from '../../../shared/auth';
 import { startWsServer, stopWsServer } from '../../utils/ws-manager';
 import { v4 as uuid } from 'uuid';
@@ -308,6 +308,32 @@ export default defineEventHandler(async (event) => {
       return { history: getDb().prepare('SELECT * FROM backup_history ORDER BY created_at DESC LIMIT 50').all() };
     }
 
+    // ===== PDFS — Upload file to Firebase Storage =====
+    if (action === 'pdfs/upload' && method === 'POST') {
+      const formData = await readMultipartFormData(event);
+      if (!formData) throw createError({ statusCode: 400, message: 'No form data' });
+
+      const fileField = formData.find(f => f.name === 'file');
+      const classLevel = formData.find(f => f.name === 'classLevel')?.data?.toString() || '1';
+      const subjectName = formData.find(f => f.name === 'subjectName')?.data?.toString() || 'general';
+
+      if (!fileField || !fileField.data || !fileField.filename) {
+        throw createError({ statusCode: 400, message: 'PDF file is required' });
+      }
+
+      // Sanitize filename
+      const safeName = fileField.filename
+        .replace(/[^a-zA-Z0-9._-]/g, '_')
+        .toLowerCase();
+      const storagePath = `pdfs/class${classLevel}/${subjectName.toLowerCase().replace(/[^a-z0-9]/g, '_')}/${safeName}`;
+
+      const fileSizeKb = Math.round(fileField.data.length / 1024);
+
+      await uploadToFirebase(storagePath, fileField.data, fileField.type || 'application/pdf');
+
+      return { firebasePath: storagePath, fileSizeKb, filename: fileField.filename };
+    }
+
     // ===== PDFS — List =====
     if (action === 'pdfs' && method === 'GET') {
       const q = getQuery(event);
@@ -414,7 +440,7 @@ export default defineEventHandler(async (event) => {
       const db = getDb();
       const total = (db.prepare('SELECT COUNT(*) as c FROM users WHERE is_admin = 0').get() as any).c;
       const users = db.prepare(`
-        SELECT u.id, u.name, u.email, u.phone, u.created_at,
+        SELECT u.id, u.name, u.email, u.phone, u.is_blocked, u.created_at,
           (SELECT status FROM subscriptions WHERE user_id = u.id ORDER BY created_at DESC LIMIT 1) as sub_status,
           (SELECT expires_at FROM subscriptions WHERE user_id = u.id AND status = 'active' ORDER BY expires_at DESC LIMIT 1) as sub_expires
         FROM users u WHERE u.is_admin = 0
@@ -423,11 +449,68 @@ export default defineEventHandler(async (event) => {
       return { users, total, page, limit };
     }
 
+    // ===== USERS — Block / Unblock =====
+    if (action.match(/^users\/[^/]+\/block$/) && method === 'POST') {
+      const userId = action.split('/')[1];
+      const db = getDb();
+      const user = db.prepare('SELECT id, is_blocked FROM users WHERE id = ? AND is_admin = 0').get(userId) as any;
+      if (!user) throw createError({ statusCode: 404, message: 'User not found' });
+      const newBlocked = user.is_blocked ? 0 : 1;
+      db.prepare('UPDATE users SET is_blocked = ?, updated_at = datetime(\'now\') WHERE id = ?').run(newBlocked, userId);
+      // Notify connected client instantly
+      try {
+        const { pushToWsUser } = await import('../../utils/ws-manager');
+        if (newBlocked) {
+          pushToWsUser(userId, 'account_blocked', { message: 'Your account has been blocked' });
+        } else {
+          pushToWsUser(userId, 'account_unblocked', { message: 'Your account has been unblocked' });
+        }
+      } catch {}
+      return { userId, isBlocked: !!newBlocked };
+    }
+
+    // ===== USERS — Grant Subscription =====
+    if (action.match(/^users\/[^/]+\/subscription$/) && method === 'POST') {
+      const userId = action.split('/')[1];
+      const body = await readBody(event);
+      const { action: subAction, days } = body;
+      const db = getDb();
+      const user = db.prepare('SELECT id FROM users WHERE id = ? AND is_admin = 0').get(userId) as any;
+      if (!user) throw createError({ statusCode: 404, message: 'User not found' });
+
+      if (subAction === 'grant') {
+        const durationDays = parseInt(days) || 30;
+        // Expire any existing active subs
+        db.prepare(`UPDATE subscriptions SET status = 'expired' WHERE user_id = ? AND status = 'active'`).run(userId);
+        // Create new active subscription
+        const subId = uuid();
+        const now = new Date();
+        const expires = new Date(now.getTime() + durationDays * 86400_000);
+        db.prepare(`INSERT INTO subscriptions (id, user_id, status, amount, started_at, expires_at) VALUES (?, ?, 'active', 0, ?, ?)`)
+          .run(subId, userId, now.toISOString(), expires.toISOString());
+        // Notify connected client
+        try {
+          const { pushToWsUser } = await import('../../utils/ws-manager');
+          pushToWsUser(userId, 'subscriptionActivated', { status: 'active', expiresAt: expires.toISOString() });
+        } catch {}
+        return { userId, subscription: { status: 'active', expiresAt: expires.toISOString(), days: durationDays } };
+      } else if (subAction === 'revoke') {
+        db.prepare(`UPDATE subscriptions SET status = 'cancelled', updated_at = datetime('now') WHERE user_id = ? AND status = 'active'`).run(userId);
+        try {
+          const { pushToWsUser } = await import('../../utils/ws-manager');
+          pushToWsUser(userId, 'subscriptionExpired', { status: 'cancelled' });
+        } catch {}
+        return { userId, subscription: { status: 'cancelled' } };
+      } else {
+        throw createError({ statusCode: 400, message: 'action must be "grant" or "revoke"' });
+      }
+    }
+
     // ===== USERS — Get single =====
     if (action.startsWith('users/') && method === 'GET') {
       const userId = action.replace('users/', '');
       const db = getDb();
-      const user = db.prepare('SELECT id, name, email, phone, created_at FROM users WHERE id = ?').get(userId);
+      const user = db.prepare('SELECT id, name, email, phone, is_blocked, created_at FROM users WHERE id = ?').get(userId);
       if (!user) throw createError({ statusCode: 404, message: 'User not found' });
       const subs = db.prepare('SELECT * FROM subscriptions WHERE user_id = ? ORDER BY created_at DESC').all(userId);
       const payments = db.prepare('SELECT * FROM payments WHERE user_id = ? ORDER BY created_at DESC').all(userId);
