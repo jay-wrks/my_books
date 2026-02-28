@@ -510,9 +510,6 @@ export function stopServer(): Promise<void> {
     _cronTimers.forEach(t => clearInterval(t));
     _cronTimers = [];
 
-    // Stop accepting new WS connections
-    wss.close(() => { console.log('[WS] WebSocket server closed'); });
-
     // Close all existing connections
     for (const [ws] of connections) {
       try {

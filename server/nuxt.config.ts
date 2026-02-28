@@ -14,7 +14,6 @@ export default defineNuxtConfig({
     wsPort: process.env.WS_PORT || '3001',
     public: {
       razorpayKeyId: process.env.RAZORPAY_KEY_ID,
-      domain: process.env.DOMAIN || 'localhost:3000',
     },
   },
 
