@@ -4,7 +4,7 @@
 // ============================================================================
 
 import { getDb, getTableNames, getAllData, restoreAllData, getTableRowCount, getActiveSubscription, expireOldSubscriptions } from '../../../shared/db';
-import { backupToFirebase, listBackups, getBackupData, uploadToFirebase } from '../../../shared/firebase';
+import { backupToFirebase, listBackups, getBackupData } from '../../../shared/firebase';
 import { hashPwd, checkPwd, signJwt } from '../../../shared/auth';
 import { startWsServer, stopWsServer } from '../../utils/ws-manager';
 import { v4 as uuid } from 'uuid';
@@ -316,32 +316,6 @@ export default defineEventHandler(async (event) => {
     // ===== DB — Backup history =====
     if (action === 'db/history' && method === 'GET') {
       return { history: getDb().prepare('SELECT * FROM backup_history ORDER BY created_at DESC LIMIT 50').all() };
-    }
-
-    // ===== PDFS — Upload file to Firebase Storage =====
-    if (action === 'pdfs/upload' && method === 'POST') {
-      const formData = await readMultipartFormData(event);
-      if (!formData) throw createError({ statusCode: 400, message: 'No form data' });
-
-      const fileField = formData.find(f => f.name === 'file');
-      const classLevel = formData.find(f => f.name === 'classLevel')?.data?.toString() || '1';
-      const subjectName = formData.find(f => f.name === 'subjectName')?.data?.toString() || 'general';
-
-      if (!fileField || !fileField.data || !fileField.filename) {
-        throw createError({ statusCode: 400, message: 'PDF file is required' });
-      }
-
-      // Sanitize filename
-      const safeName = fileField.filename
-        .replace(/[^a-zA-Z0-9._-]/g, '_')
-        .toLowerCase();
-      const storagePath = `pdfs/class${classLevel}/${subjectName.toLowerCase().replace(/[^a-z0-9]/g, '_')}/${safeName}`;
-
-      const fileSizeKb = Math.round(fileField.data.length / 1024);
-
-      await uploadToFirebase(storagePath, fileField.data, fileField.type || 'application/pdf');
-
-      return { firebasePath: storagePath, fileSizeKb, filename: fileField.filename };
     }
 
     // ===== PDFS — List =====

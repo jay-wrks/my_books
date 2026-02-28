@@ -136,6 +136,8 @@
 </template>
 
 <script setup lang="ts">
+import { uploadToFirebaseStorage } from '~/composables/useFirebaseUpload';
+
 const { api } = useApi();
 const pdfs = ref<any[]>([]);
 const pdfData = ref<any>(null);
@@ -189,32 +191,28 @@ async function uploadFile(file: File) {
   // Resolve subject name for the storage path
   const subjectName = subjects.value.find((s: any) => s.id === form.subjectId)?.name || 'general';
 
+  // Build the storage path
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_').toLowerCase();
+  const subj = subjectName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+  const storagePath = `pdfs/class${form.classLevel}/${subj}/${safeName}`;
+
   uploading.value = true;
   uploadFileName.value = file.name;
   uploadError.value = '';
 
   try {
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('classLevel', String(form.classLevel));
-    fd.append('subjectName', subjectName);
+    // Upload directly from browser to Firebase Storage (no server involved)
+    await uploadToFirebaseStorage(storagePath, file);
 
-    const token = useCookie('admin_token');
-    const res = await $fetch<any>('/api/admin/pdfs/upload', {
-      method: 'POST',
-      body: fd,
-      headers: token.value ? { Authorization: `Bearer ${token.value}` } : {},
-    });
-
-    form.firebasePath = res.firebasePath;
-    form.fileSizeKb = res.fileSizeKb;
+    form.firebasePath = storagePath;
+    form.fileSizeKb = Math.round(file.size / 1024);
 
     // Auto-fill title from filename if empty
     if (!form.title) {
       form.title = file.name.replace(/\.pdf$/i, '').replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
     }
   } catch (e: any) {
-    uploadError.value = e.data?.message || e.message || 'Upload failed';
+    uploadError.value = e.message || 'Upload failed';
   } finally {
     uploading.value = false;
   }
