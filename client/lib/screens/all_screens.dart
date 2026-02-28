@@ -10,6 +10,7 @@
 // ============================================================================
 
 import 'dart:async';
+import 'dart:convert';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -18,6 +19,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:screen_protector/screen_protector.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
+// ignore: implementation_imports
+import 'package:syncfusion_flutter_pdfviewer/src/annotation/text_markup.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../main.dart'; // Tok design tokens
 import '../services/ws_service.dart';
@@ -1438,6 +1441,12 @@ class _PdfViewerScreenState extends ConsumerState<PdfViewerScreen> {
   bool _loading = true;
   String? _error;
   double _progress = 0.0; // 0.0 to 1.0
+  int _initialPage = 1;
+  final PdfViewerController _controller = PdfViewerController();
+  Timer? _pageDebounce;
+  Timer? _annotationDebounce;
+  bool _annotationsChanged = false;
+  String? _pendingAnnotationsJson;
 
   @override
   void initState() {
@@ -1460,17 +1469,33 @@ class _PdfViewerScreenState extends ConsumerState<PdfViewerScreen> {
 
   Future<void> _loadPdf() async {
     try {
-      final cached = await _pdf.loadFromCache(widget.pdfId);
-      if (cached != null) {
-        setState(() { _pdfBytes = cached; _loading = false; });
-        return;
+      // Fetch reading progress + annotations JSON in parallel with PDF
+      final progressFuture = _ws.send('getProgress', {'pdfId': widget.pdfId})
+          .catchError((_) => <String, dynamic>{'lastPage': 1});
+
+      // Try local cache first, otherwise download original PDF
+      Uint8List? bytes = await _pdf.loadFromCache(widget.pdfId);
+      if (bytes == null) {
+        final res = await _ws.send('getPdfUrl', {'pdfId': widget.pdfId});
+        final url = res['url'] as String;
+        bytes = await _pdf.downloadAndCache(widget.pdfId, url, onProgress: (p) {
+          if (mounted) setState(() => _progress = p);
+        });
       }
-      final res = await _ws.send('getPdfUrl', {'pdfId': widget.pdfId});
-      final url = res['url'] as String;
-      final bytes = await _pdf.downloadAndCache(widget.pdfId, url, onProgress: (p) {
-        if (mounted) setState(() => _progress = p);
-      });
-      if (mounted) setState(() { _pdfBytes = bytes; _loading = false; });
+
+      // Restore last page + annotations JSON
+      final progressRes = await progressFuture;
+      final lastPage = (progressRes['lastPage'] as int?) ?? 1;
+      final annotJson = progressRes['annotationsJson'] as String?;
+
+      if (mounted) {
+        setState(() {
+          _pdfBytes = bytes;
+          _initialPage = lastPage;
+          _pendingAnnotationsJson = annotJson;
+          _loading = false;
+        });
+      }
     } catch (e) {
       final msg = e.toString();
       if (mounted) {
@@ -1484,8 +1509,146 @@ class _PdfViewerScreenState extends ConsumerState<PdfViewerScreen> {
     }
   }
 
+  void _onDocumentLoaded(PdfDocumentLoadedDetails details) {
+    if (_pendingAnnotationsJson != null) {
+      _restoreAnnotations(_pendingAnnotationsJson!);
+      _pendingAnnotationsJson = null;
+    }
+  }
+
+  void _restoreAnnotations(String jsonStr) {
+    try {
+      final List<dynamic> list = jsonDecode(jsonStr);
+      for (final a in list) {
+        final int pageNumber = a['pageNumber'];
+        final List<dynamic> rects = a['rects'];
+        final textLines = rects.map((r) => PdfTextLine(
+          Rect.fromLTRB(
+            (r['l'] as num).toDouble(),
+            (r['t'] as num).toDouble(),
+            (r['r'] as num).toDouble(),
+            (r['b'] as num).toDouble(),
+          ),
+          '',
+          pageNumber,
+        )).toList();
+
+        if (textLines.isEmpty) continue;
+
+        Annotation annotation;
+        switch (a['type']) {
+          case 'highlight':
+            annotation = HighlightAnnotation(textBoundsCollection: textLines);
+          case 'strikethrough':
+            annotation = StrikethroughAnnotation(textBoundsCollection: textLines);
+          case 'underline':
+            annotation = UnderlineAnnotation(textBoundsCollection: textLines);
+          case 'squiggly':
+            annotation = SquigglyAnnotation(textBoundsCollection: textLines);
+          default:
+            continue;
+        }
+
+        // ignore: deprecated_member_use
+        annotation.color = Color(a['color'] as int);
+        annotation.opacity = (a['opacity'] as num).toDouble();
+        _controller.addAnnotation(annotation);
+      }
+      debugPrint('[PDF] Restored ${list.length} annotations from server');
+    } catch (e) {
+      debugPrint('[PDF] Restore annotations failed: $e');
+    }
+  }
+
+  String _serializeAnnotations() {
+    final annotations = _controller.getAnnotations();
+    final list = <Map<String, dynamic>>[];
+
+    for (final a in annotations) {
+      String? type;
+      List<Rect> rects = [];
+
+      if (a is HighlightAnnotation) {
+        type = 'highlight';
+        rects = a.textMarkupRects;
+      } else if (a is StrikethroughAnnotation) {
+        type = 'strikethrough';
+        rects = a.textMarkupRects;
+      } else if (a is UnderlineAnnotation) {
+        type = 'underline';
+        rects = a.textMarkupRects;
+      } else if (a is SquigglyAnnotation) {
+        type = 'squiggly';
+        rects = a.textMarkupRects;
+      }
+
+      if (type == null) continue;
+
+      list.add({
+        'type': type,
+        'pageNumber': a.pageNumber,
+        // ignore: deprecated_member_use
+        'color': a.color.value,
+        'opacity': a.opacity,
+        'rects': rects.map((r) => {
+          'l': r.left, 't': r.top, 'r': r.right, 'b': r.bottom,
+        }).toList(),
+      });
+    }
+
+    return jsonEncode(list);
+  }
+
+  void _onPageChanged(PdfPageChangedDetails details) {
+    // Debounce — save after 2 seconds of no page change
+    _pageDebounce?.cancel();
+    _pageDebounce = Timer(const Duration(seconds: 2), () {
+      _ws.send('saveProgress', {
+        'pdfId': widget.pdfId,
+        'lastPage': details.newPageNumber,
+        'totalPages': _controller.pageCount,
+      }).catchError((_) {});
+    });
+  }
+
+  void _onAnnotationChanged() {
+    _annotationsChanged = true;
+    _annotationDebounce?.cancel();
+    _annotationDebounce = Timer(const Duration(seconds: 3), () {
+      _saveAnnotationsToServer();
+    });
+  }
+
+  Future<void> _saveAnnotationsToServer() async {
+    if (!_annotationsChanged) return;
+    try {
+      final json = _serializeAnnotations();
+      await _ws.send('saveAnnotations', {
+        'pdfId': widget.pdfId,
+        'annotationsJson': json,
+      });
+      _annotationsChanged = false;
+      debugPrint('[PDF] Annotations saved to DB');
+    } catch (e) {
+      debugPrint('[PDF] Save annotations failed: $e');
+    }
+  }
+
   @override
   void dispose() {
+    _pageDebounce?.cancel();
+    _annotationDebounce?.cancel();
+    if (_controller.pageCount > 0) {
+      _ws.send('saveProgress', {
+        'pdfId': widget.pdfId,
+        'lastPage': _controller.pageNumber,
+        'totalPages': _controller.pageCount,
+      }).catchError((_) {});
+    }
+    if (_annotationsChanged) {
+      _saveAnnotationsToServer();
+    }
+    _controller.dispose();
     _disableSecurity();
     super.dispose();
   }
@@ -1570,10 +1733,17 @@ class _PdfViewerScreenState extends ConsumerState<PdfViewerScreen> {
                   children: [
                     SfPdfViewer.memory(
                       _pdfBytes!,
+                      controller: _controller,
+                      initialPageNumber: _initialPage,
                       canShowScrollHead: true,
                       canShowScrollStatus: true,
                       enableDoubleTapZooming: true,
                       pageSpacing: 4,
+                      onDocumentLoaded: _onDocumentLoaded,
+                      onPageChanged: _onPageChanged,
+                      onAnnotationAdded: (_) => _onAnnotationChanged(),
+                      onAnnotationEdited: (_) => _onAnnotationChanged(),
+                      onAnnotationRemoved: (_) => _onAnnotationChanged(),
                     ),
                     Positioned.fill(
                       child: IgnorePointer(

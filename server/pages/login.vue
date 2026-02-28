@@ -34,6 +34,7 @@
 <script setup lang="ts">
 const { api } = useApi();
 const token = useCookie('admin_token', { maxAge: 30 * 86400 });
+const userRole = useCookie('user_role', { maxAge: 30 * 86400 });
 const email = ref('');
 const password = ref('');
 const loading = ref(false);
@@ -48,7 +49,8 @@ async function doLogin() {
       body: { email: email.value, password: password.value },
     });
     token.value = res.token;
-    navigateTo('/');
+    userRole.value = res.role;
+    navigateTo(res.role === 'admin' ? '/pdfs' : '/');
   } catch (e: any) {
     error.value = e.data?.message || 'Login failed';
   } finally {

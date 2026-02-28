@@ -26,27 +26,37 @@ export default defineEventHandler(async (event) => {
     if (action === 'login' && method === 'POST') {
       const { email, password } = await readBody(event);
       const config = useRuntimeConfig();
-      if (email !== config.adminEmail || password !== config.adminPassword) {
-        throw createError({ statusCode: 401, message: 'Invalid credentials' });
-      }
-      // Check if admin user exists in DB, create if not
       const db = getDb();
-      let admin = db.prepare('SELECT * FROM users WHERE email = ? AND is_admin = 1').get(email) as any;
-      if (!admin) {
-        const id = uuid();
-        db.prepare('INSERT OR IGNORE INTO users (id, name, email, password_hash, is_admin) VALUES (?, ?, ?, ?, 1)')
-          .run(id, 'Admin', email, hashPwd(password));
-        admin = { id, email };
+
+      // Check developer login (from .env)
+      if (email === config.devEmail && password === config.devPassword) {
+        let dev = db.prepare("SELECT * FROM users WHERE email = ? AND role = 'developer'").get(email) as any;
+        if (!dev) {
+          const id = uuid();
+          db.prepare("INSERT OR IGNORE INTO users (id, name, email, password_hash, is_admin, role) VALUES (?, ?, ?, ?, 1, 'developer')")
+            .run(id, 'Developer', email, hashPwd(password));
+          dev = { id, email };
+        }
+        const token = signJwt({ userId: dev.id, email, role: 'developer' });
+        setCookie(event, 'admin_token', token, { httpOnly: false, maxAge: 30 * 86400, path: '/' });
+        return { token, email, role: 'developer' };
       }
-      const token = signJwt({ userId: admin.id, email, isAdmin: true });
-      setCookie(event, 'admin_token', token, { httpOnly: false, maxAge: 30 * 86400, path: '/' });
-      return { token, email };
+
+      // Check admin login (from DB)
+      const admin = db.prepare("SELECT * FROM users WHERE email = ? AND role = 'admin'").get(email) as any;
+      if (admin && checkPwd(password, admin.password_hash)) {
+        const token = signJwt({ userId: admin.id, email, role: 'admin' });
+        setCookie(event, 'admin_token', token, { httpOnly: false, maxAge: 30 * 86400, path: '/' });
+        return { token, email, role: 'admin' };
+      }
+
+      throw createError({ statusCode: 401, message: 'Invalid credentials' });
     }
 
     // ===== DASHBOARD STATS =====
     if (action === 'stats' && method === 'GET') {
       const db = getDb();
-      const totalUsers = (db.prepare('SELECT COUNT(*) as c FROM users WHERE is_admin = 0').get() as any).c;
+      const totalUsers = (db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'user'").get() as any).c;
       const activeSubs = (db.prepare(`SELECT COUNT(*) as c FROM subscriptions WHERE status = 'active' AND datetime(expires_at) > datetime('now')`).get() as any).c;
       const totalPdfs = (db.prepare('SELECT COUNT(*) as c FROM pdfs').get() as any).c;
       const totalPayments = (db.prepare('SELECT COALESCE(SUM(amount), 0) as s FROM payments WHERE status = \'captured\'').get() as any).s;
@@ -438,12 +448,12 @@ export default defineEventHandler(async (event) => {
       const limit = Math.min(parseInt(q.limit as string) || 50, 200);
       const offset = (page - 1) * limit;
       const db = getDb();
-      const total = (db.prepare('SELECT COUNT(*) as c FROM users WHERE is_admin = 0').get() as any).c;
+      const total = (db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'user'").get() as any).c;
       const users = db.prepare(`
         SELECT u.id, u.name, u.email, u.phone, u.is_blocked, u.created_at,
           (SELECT status FROM subscriptions WHERE user_id = u.id ORDER BY created_at DESC LIMIT 1) as sub_status,
           (SELECT expires_at FROM subscriptions WHERE user_id = u.id AND status = 'active' ORDER BY expires_at DESC LIMIT 1) as sub_expires
-        FROM users u WHERE u.is_admin = 0
+        FROM users u WHERE u.role = 'user'
         ORDER BY u.created_at DESC LIMIT ? OFFSET ?
       `).all(limit, offset);
       return { users, total, page, limit };
@@ -453,7 +463,7 @@ export default defineEventHandler(async (event) => {
     if (action.match(/^users\/[^/]+\/block$/) && method === 'POST') {
       const userId = action.split('/')[1];
       const db = getDb();
-      const user = db.prepare('SELECT id, is_blocked FROM users WHERE id = ? AND is_admin = 0').get(userId) as any;
+      const user = db.prepare("SELECT id, is_blocked FROM users WHERE id = ? AND role = 'user'").get(userId) as any;
       if (!user) throw createError({ statusCode: 404, message: 'User not found' });
       const newBlocked = user.is_blocked ? 0 : 1;
       db.prepare('UPDATE users SET is_blocked = ?, updated_at = datetime(\'now\') WHERE id = ?').run(newBlocked, userId);
@@ -475,7 +485,7 @@ export default defineEventHandler(async (event) => {
       const body = await readBody(event);
       const { action: subAction, days } = body;
       const db = getDb();
-      const user = db.prepare('SELECT id FROM users WHERE id = ? AND is_admin = 0').get(userId) as any;
+      const user = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'user'").get(userId) as any;
       if (!user) throw createError({ statusCode: 404, message: 'User not found' });
 
       if (subAction === 'grant') {
@@ -495,7 +505,7 @@ export default defineEventHandler(async (event) => {
         } catch {}
         return { userId, subscription: { status: 'active', expiresAt: expires.toISOString(), days: durationDays } };
       } else if (subAction === 'revoke') {
-        db.prepare(`UPDATE subscriptions SET status = 'cancelled', updated_at = datetime('now') WHERE user_id = ? AND status = 'active'`).run(userId);
+        db.prepare(`UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ? AND status = 'active'`).run(userId);
         try {
           const { pushToWsUser } = await import('../../utils/ws-manager');
           pushToWsUser(userId, 'subscriptionExpired', { status: 'cancelled' });
@@ -515,6 +525,65 @@ export default defineEventHandler(async (event) => {
       const subs = db.prepare('SELECT * FROM subscriptions WHERE user_id = ? ORDER BY created_at DESC').all(userId);
       const payments = db.prepare('SELECT * FROM payments WHERE user_id = ? ORDER BY created_at DESC').all(userId);
       return { user, subscriptions: subs, payments };
+    }
+
+    // ===== AUTH INFO — returns current user role =====
+    if (action === 'me' && method === 'GET') {
+      const admin = event.context.admin;
+      return { userId: admin.userId, email: admin.email, role: admin.role };
+    }
+
+    // ===== ADMINS — List (developer only) =====
+    if (action === 'admins' && method === 'GET') {
+      const caller = event.context.admin;
+      if (caller.role !== 'developer') throw createError({ statusCode: 403, message: 'Developer access required' });
+      const db = getDb();
+      const admins = db.prepare("SELECT id, name, email, created_at FROM users WHERE role = 'admin' ORDER BY created_at DESC").all();
+      return { admins };
+    }
+
+    // ===== ADMINS — Create (developer only) =====
+    if (action === 'admins' && method === 'POST') {
+      const caller = event.context.admin;
+      if (caller.role !== 'developer') throw createError({ statusCode: 403, message: 'Developer access required' });
+      const { name, email, password } = await readBody(event);
+      if (!name || !email || !password) throw createError({ statusCode: 400, message: 'name, email, and password are required' });
+      if (password.length < 6) throw createError({ statusCode: 400, message: 'Password must be at least 6 characters' });
+      const db = getDb();
+      const existing = db.prepare('SELECT id FROM users WHERE email = ? COLLATE NOCASE').get(email) as any;
+      if (existing) throw createError({ statusCode: 409, message: 'Email already in use' });
+      const id = uuid();
+      db.prepare("INSERT INTO users (id, name, email, password_hash, is_admin, role) VALUES (?, ?, ?, ?, 1, 'admin')")
+        .run(id, name, email, hashPwd(password));
+      return { id, name, email, role: 'admin' };
+    }
+
+    // ===== ADMINS — Delete (developer only) =====
+    if (action.match(/^admins\/[^/]+$/) && method === 'DELETE') {
+      const caller = event.context.admin;
+      if (caller.role !== 'developer') throw createError({ statusCode: 403, message: 'Developer access required' });
+      const adminId = action.split('/')[1];
+      const db = getDb();
+      const target = db.prepare("SELECT id, role FROM users WHERE id = ?").get(adminId) as any;
+      if (!target) throw createError({ statusCode: 404, message: 'Admin not found' });
+      if (target.role === 'developer') throw createError({ statusCode: 403, message: 'Cannot delete developer account' });
+      if (target.role !== 'admin') throw createError({ statusCode: 400, message: 'User is not an admin' });
+      db.prepare('DELETE FROM users WHERE id = ?').run(adminId);
+      return { deleted: true };
+    }
+
+    // ===== ADMINS — Reset password (developer only) =====
+    if (action.match(/^admins\/[^/]+\/reset-password$/) && method === 'POST') {
+      const caller = event.context.admin;
+      if (caller.role !== 'developer') throw createError({ statusCode: 403, message: 'Developer access required' });
+      const adminId = action.split('/')[1];
+      const { password } = await readBody(event);
+      if (!password || password.length < 6) throw createError({ statusCode: 400, message: 'Password must be at least 6 characters' });
+      const db = getDb();
+      const target = db.prepare("SELECT id, role FROM users WHERE id = ?").get(adminId) as any;
+      if (!target || target.role !== 'admin') throw createError({ statusCode: 404, message: 'Admin not found' });
+      db.prepare('UPDATE users SET password_hash = ?, updated_at = datetime(\'now\') WHERE id = ?').run(hashPwd(password), adminId);
+      return { reset: true };
     }
 
     throw createError({ statusCode: 404, message: `Unknown admin endpoint: ${action}` });

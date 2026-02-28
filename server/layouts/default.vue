@@ -16,13 +16,15 @@
 
           <!-- Navigation -->
           <nav class="sidebar-nav">
-            <span class="nav-section-label">Main</span>
-            <a v-for="item in navMain" :key="item.to" :href="item.to"
-              @click.prevent="navigateTo(item.to)"
-              :class="['nav-link', { active: route.path === item.to }]">
-              <span class="nav-icon" v-html="item.svg"></span>
-              <span>{{ item.label }}</span>
-            </a>
+            <template v-if="navMain.length">
+              <span class="nav-section-label">Main</span>
+              <a v-for="item in navMain" :key="item.to" :href="item.to"
+                @click.prevent="navigateTo(item.to)"
+                :class="['nav-link', { active: route.path === item.to }]">
+                <span class="nav-icon" v-html="item.svg"></span>
+                <span>{{ item.label }}</span>
+              </a>
+            </template>
 
             <span class="nav-section-label">Content</span>
             <a v-for="item in navContent" :key="item.to" :href="item.to"
@@ -69,10 +71,12 @@
 <script setup lang="ts">
 const route = useRoute();
 const adminToken = useCookie('admin_token');
+const userRole = useCookie('user_role');
 const mobileOpen = ref(false);
 
 const publicPages = ['/subscribe', '/login'];
 const isAdmin = computed(() => !publicPages.includes(route.path) && !!adminToken.value);
+const isDev = computed(() => userRole.value === 'developer');
 
 const svgDashboard = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>';
 const svgDeploy = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>';
@@ -81,22 +85,33 @@ const svgDatabase = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"
 const svgPdfs = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
 const svgUsers = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>';
 const svgSubjects = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>';
+const svgAdmins = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
 
-const navMain = [
-  { to: '/', svg: svgDashboard, label: 'Dashboard' },
-  { to: '/deploy', svg: svgDeploy, label: 'Deploy' },
-  { to: '/monitor', svg: svgMonitor, label: 'Monitor' },
-  { to: '/database', svg: svgDatabase, label: 'Database' },
-];
+const navMain = computed(() => {
+  if (!isDev.value) return [];
+  return [
+    { to: '/', svg: svgDashboard, label: 'Dashboard' },
+    { to: '/deploy', svg: svgDeploy, label: 'Deploy' },
+    { to: '/monitor', svg: svgMonitor, label: 'Monitor' },
+    { to: '/database', svg: svgDatabase, label: 'Database' },
+  ];
+});
 
-const navContent = [
-  { to: '/pdfs', svg: svgPdfs, label: 'PDFs' },
-  { to: '/users', svg: svgUsers, label: 'Users' },
-  { to: '/subjects', svg: svgSubjects, label: 'Subjects' },
-];
+const navContent = computed(() => {
+  const items = [
+    { to: '/pdfs', svg: svgPdfs, label: 'PDFs' },
+    { to: '/users', svg: svgUsers, label: 'Users' },
+    { to: '/subjects', svg: svgSubjects, label: 'Subjects' },
+  ];
+  if (isDev.value) {
+    items.push({ to: '/admins', svg: svgAdmins, label: 'Admins' });
+  }
+  return items;
+});
 
 function logout() {
   adminToken.value = null;
+  userRole.value = null;
   navigateTo('/login');
 }
 </script>

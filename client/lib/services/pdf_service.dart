@@ -131,6 +131,15 @@ class PdfService {
     }
   }
 
+  // Update cached PDF with annotated version
+  Future<void> updateCache(String pdfId, Uint8List pdfBytes) async {
+    final encrypted = await _xorCrypt(pdfBytes);
+    final dir = await _getCacheDir();
+    final file = File('$dir/${_cacheFileName(pdfId)}');
+    await file.writeAsBytes(encrypted);
+    debugPrint('[PDF] Cache updated: $pdfId (${pdfBytes.length} bytes)');
+  }
+
   // Get cache size in bytes
   Future<int> getCacheSize() async {
     final dir = await _getCacheDir();

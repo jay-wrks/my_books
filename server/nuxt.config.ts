@@ -5,8 +5,8 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     jwtSecret: process.env.JWT_SECRET,
-    adminEmail: process.env.ADMIN_EMAIL,
-    adminPassword: process.env.ADMIN_PASSWORD,
+    devEmail: process.env.DEV_EMAIL,
+    devPassword: process.env.DEV_PASSWORD,
     razorpayKeyId: process.env.RAZORPAY_KEY_ID,
     razorpayKeySecret: process.env.RAZORPAY_KEY_SECRET,
     razorpayPlanId: process.env.RAZORPAY_PLAN_ID,

@@ -25,7 +25,7 @@ export default defineEventHandler((event) => {
   }
 
   const payload = verifyJwt(token);
-  if (!payload || !payload.isAdmin) {
+  if (!payload || (payload.role !== 'admin' && payload.role !== 'developer')) {
     throw createError({ statusCode: 403, message: 'Admin access required' });
   }
 
