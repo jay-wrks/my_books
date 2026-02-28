@@ -101,6 +101,15 @@ function pushToUser(userId: string, event: string, data: any = {}) {
   }
 }
 
+// Disconnect a user (close all their WS connections)
+function disconnectUser(userId: string) {
+  for (const [ws, conn] of connections) {
+    if (conn.userId === userId) {
+      try { ws.close(4003, 'Account blocked'); } catch {}
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Action Handlers
 // ---------------------------------------------------------------------------
@@ -485,7 +494,7 @@ export function getWsStats() {
 }
 
 // Notify user of subscription change (called from admin/razorpay webhook)
-export { pushToUser };
+export { pushToUser, disconnectUser };
 
 // ---------------------------------------------------------------------------
 // Lifecycle — startServer / stopServer (called via server/utils/ws-manager.ts)

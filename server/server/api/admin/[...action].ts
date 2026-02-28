@@ -469,9 +469,11 @@ export default defineEventHandler(async (event) => {
       db.prepare('UPDATE users SET is_blocked = ?, updated_at = datetime(\'now\') WHERE id = ?').run(newBlocked, userId);
       // Notify connected client instantly
       try {
-        const { pushToWsUser } = await import('../../utils/ws-manager');
+        const { pushToWsUser, disconnectWsUser } = await import('../../utils/ws-manager');
         if (newBlocked) {
           pushToWsUser(userId, 'account_blocked', { message: 'Your account has been blocked' });
+          // Give the push event a moment to arrive, then kill the connection
+          setTimeout(() => disconnectWsUser(userId), 500);
         } else {
           pushToWsUser(userId, 'account_unblocked', { message: 'Your account has been unblocked' });
         }

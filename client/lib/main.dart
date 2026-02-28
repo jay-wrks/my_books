@@ -11,6 +11,9 @@ import 'services/auth_service.dart';
 import 'services/server_config.dart';
 import 'screens/all_screens.dart';
 
+/// Global navigator key so AuthNotifier can pop all routes when account is blocked.
+final navigatorKey = GlobalKey<NavigatorState>();
+
 // ─── Design Tokens ──────────────────────────────────────────────────────────
 class Tok {
   Tok._();
@@ -88,6 +91,7 @@ class _AravindAppState extends ConsumerState<AravindApp> {
     final inter = GoogleFonts.interTextTheme(ThemeData.dark().textTheme);
 
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'Aravind',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(

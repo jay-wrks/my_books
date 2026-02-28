@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'ws_service.dart';
+import '../main.dart' show navigatorKey;
 
 // ---------------------------------------------------------------------------
 // Auth State
@@ -143,6 +144,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
         // Force logout when blocked by admin
         _storage.delete(key: 'token');
         _ws.setToken(null);
+        // Pop all pushed routes so _AuthGate's _BlockedScreen is visible
+        navigatorKey.currentState?.popUntil((route) => route.isFirst);
         state = const AuthState(isLoading: false, isBlocked: true);
       }
       if (event['event'] == 'account_unblocked') {

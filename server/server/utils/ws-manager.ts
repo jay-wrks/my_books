@@ -37,3 +37,8 @@ export async function pushToWsUser(userId: string, event: string, data: any = {}
   const mod = await getWsModule();
   mod.pushToUser(userId, event, data);
 }
+
+export async function disconnectWsUser(userId: string) {
+  const mod = await getWsModule();
+  mod.disconnectUser(userId);
+}
