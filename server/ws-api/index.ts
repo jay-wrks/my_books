@@ -14,7 +14,7 @@ import 'dotenv/config';
 import { WebSocketServer, WebSocket } from 'ws';
 import { v4 as uuid } from 'uuid';
 import { getDb, getActiveSubscription, expireOldSubscriptions } from '../shared/db';
-import { getSignedUrl, initFirebase } from '../shared/firebase';
+import { getSignedUrl, initFirebase, publishServerConfig } from '../shared/firebase';
 import { hashPwd, checkPwd, signJwt, verifyJwt, TokenPayload } from '../shared/auth';
 import http from 'http';
 import os from 'os';
@@ -42,7 +42,7 @@ interface ConnState {
   ws: WebSocket;
   userId: string | null;
   email: string | null;
-  isAdmin: boolean;
+  role: 'user' | 'admin' | 'developer';
   connectedAt: number;
   lastActive: number;
   msgCount: number;
@@ -136,14 +136,14 @@ const handlers: Record<string, Handler> = {
     db.prepare(`INSERT INTO subscriptions (id, user_id, status) VALUES (?, ?, 'none')`)
       .run(uuid(), userId);
 
-    const token = signJwt({ userId, email: emailClean, isAdmin: false });
+    const token = signJwt({ userId, email: emailClean, role: 'user' });
     const sessionId = uuid();
     db.prepare(`INSERT INTO sessions (id, user_id, device_info) VALUES (?, ?, ?)`)
       .run(sessionId, userId, data.deviceInfo || '');
 
     conn.userId = userId;
     conn.email = emailClean;
-    conn.isAdmin = false;
+    conn.role = 'user';
     conn.sessionId = sessionId;
 
     ok(ws, rid, { token, user: { id: userId, name: name.trim(), email: emailClean, phone: phone || '' } });
@@ -173,14 +173,15 @@ const handlers: Record<string, Handler> = {
     // Blocked check
     if (user.is_blocked) return err(ws, rid, 'ACCOUNT_BLOCKED');
 
-    const token = signJwt({ userId: user.id, email: user.email, isAdmin: !!user.is_admin });
+    const userRole = (user.role as any) || 'user';
+    const token = signJwt({ userId: user.id, email: user.email, role: userRole });
     const sessionId = uuid();
     db.prepare(`INSERT INTO sessions (id, user_id, device_info) VALUES (?, ?, ?)`)
       .run(sessionId, user.id, data.deviceInfo || '');
 
     conn.userId = user.id;
     conn.email = user.email;
-    conn.isAdmin = !!user.is_admin;
+    conn.role = userRole;
     conn.sessionId = sessionId;
 
     // Check subscription
@@ -323,6 +324,42 @@ const handlers: Record<string, Handler> = {
       .run(hashPwd(newPassword), conn.userId!);
     ok(ws, rid, { changed: true });
   },
+
+  // --- GET READING PROGRESS ---
+  getProgress(ws, conn, rid, data) {
+    if (!data?.pdfId) return err(ws, rid, 'pdfId required');
+    const db = getDb();
+    const row = db.prepare('SELECT last_page, annotations_json FROM reading_progress WHERE user_id = ? AND pdf_id = ?')
+      .get(conn.userId!, data.pdfId) as any;
+    ok(ws, rid, {
+      lastPage: row?.last_page ?? 1,
+      annotationsJson: row?.annotations_json ?? null,
+    });
+  },
+
+  // --- SAVE READING PROGRESS ---
+  saveProgress(ws, conn, rid, data) {
+    const page = data?.page || data?.lastPage;
+    if (!data?.pdfId || !page) return err(ws, rid, 'pdfId and page required');
+    const db = getDb();
+    db.prepare(`INSERT INTO reading_progress (user_id, pdf_id, last_page, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(user_id, pdf_id) DO UPDATE SET last_page = excluded.last_page, updated_at = datetime('now')`)
+      .run(conn.userId!, data.pdfId, page);
+    ok(ws, rid, { saved: true });
+  },
+
+  // --- SAVE ANNOTATIONS ---
+  saveAnnotations(ws, conn, rid, data) {
+    if (!data?.pdfId) return err(ws, rid, 'pdfId required');
+    const db = getDb();
+    const json = data.annotationsJson || null;
+    db.prepare(`INSERT INTO reading_progress (user_id, pdf_id, last_page, annotations_json, updated_at)
+      VALUES (?, ?, 1, ?, datetime('now'))
+      ON CONFLICT(user_id, pdf_id) DO UPDATE SET annotations_json = excluded.annotations_json, updated_at = datetime('now')`)
+      .run(conn.userId!, data.pdfId, json);
+    ok(ws, rid, { saved: true });
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -342,7 +379,7 @@ wss.on('connection', (ws, req) => {
     ws,
     userId: null,
     email: null,
-    isAdmin: false,
+    role: 'user',
     connectedAt: Date.now(),
     lastActive: Date.now(),
     msgCount: 0,
@@ -390,7 +427,7 @@ wss.on('connection', (ws, req) => {
           if (payload) {
             conn.userId = payload.userId;
             conn.email = payload.email;
-            conn.isAdmin = payload.isAdmin;
+            conn.role = payload.role || 'user';
           }
         }
         if (!conn.userId) {
@@ -490,11 +527,12 @@ export function startServer(): Promise<void> {
     getDb();
     console.log(`[DB] SQLite ready (WAL mode)`);
 
-    server.listen(PORT, () => {
+    server.listen(PORT, async () => {
       _started = true;
       startCronJobs();
       console.log(`[WS] WebSocket server listening on :${PORT}`);
       console.log(`[WS] Health check: http://localhost:${PORT}/`);
+      try { await publishServerConfig(); } catch (e) { console.warn('[WS] Failed to publish config:', (e as any).message); }
       resolve();
     });
     server.once('error', reject);

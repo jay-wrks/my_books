@@ -149,6 +149,19 @@ export function getDb(): Database.Database {
   addCol('deploy_history', 'deploy_branch', "TEXT DEFAULT ''");
   addCol('deploy_history', 'type', "TEXT DEFAULT 'deploy'");
   addCol('users', 'is_blocked', 'INTEGER DEFAULT 0');
+  addCol('users', 'role', "TEXT DEFAULT 'user'");
+
+  // Reading progress + annotations table
+  _db!.exec(`
+    CREATE TABLE IF NOT EXISTS reading_progress (
+      user_id TEXT NOT NULL,
+      pdf_id TEXT NOT NULL,
+      last_page INTEGER DEFAULT 1,
+      annotations_json TEXT,
+      updated_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, pdf_id)
+    );
+  `);
 
   return _db;
 }

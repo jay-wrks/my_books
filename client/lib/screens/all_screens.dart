@@ -26,10 +26,7 @@ import '../main.dart'; // Tok design tokens
 import '../services/ws_service.dart';
 import '../services/auth_service.dart';
 import '../services/pdf_service.dart';
-
-// ===================== CHANGE THIS =====================
-const String _serverDomain = 'http://192.168.29.81:3000';
-// =======================================================
+import '../services/server_config.dart';
 
 final _ws = WsService();
 final _pdf = PdfService();
@@ -1910,7 +1907,7 @@ class _SubscribeWallScreenState extends ConsumerState<SubscribeWallScreen> with 
                   height: 50,
                   child: ElevatedButton(
                     onPressed: () async {
-                      final url = '$_serverDomain/subscribe?userId=${auth.userId}';
+                      final url = '${ServerConfig().serverDomain}/subscribe?userId=${auth.userId}';
                       if (await canLaunchUrl(Uri.parse(url))) {
                         await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
                       }

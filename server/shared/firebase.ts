@@ -69,3 +69,24 @@ export async function getBackupData(ts: string): Promise<Record<string, any[]>> 
   const snap = await admin.database().ref(`backups/${ts}`).once('value');
   return snap.val() || {};
 }
+
+/**
+ * Publish server connection config to Firebase Realtime DB.
+ * Flutter clients read /config on startup to discover WS and HTTP URLs.
+ */
+export async function publishServerConfig(): Promise<void> {
+  initFirebase();
+  const ip = process.env.SERVER_IP;
+  const wsPort = process.env.WS_PORT || '3001';
+  const httpPort = process.env.NUXT_PORT || '3000';
+  if (!ip) {
+    console.warn('[Firebase] SERVER_IP not set — skipping config publish');
+    return;
+  }
+  await admin.database().ref('config').set({
+    wsUrl: `ws://${ip}:${wsPort}`,
+    serverDomain: `http://${ip}:${httpPort}`,
+    updatedAt: new Date().toISOString(),
+  });
+  console.log(`[Firebase] Published server config: ws://${ip}:${wsPort}, http://${ip}:${httpPort}`);
+}

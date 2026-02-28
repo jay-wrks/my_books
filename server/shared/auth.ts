@@ -10,7 +10,9 @@ const SECRET = () => process.env.JWT_SECRET || 'dev-secret-change-in-production'
 export interface TokenPayload {
   userId: string;
   email: string;
-  isAdmin: boolean;
+  role: 'user' | 'admin' | 'developer';
+  /** @deprecated kept for backward compat with old tokens */
+  isAdmin?: boolean;
 }
 
 export const hashPwd = (p: string) => bcrypt.hashSync(p, 10);

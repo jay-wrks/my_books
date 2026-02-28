@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'services/auth_service.dart';
+import 'services/server_config.dart';
 import 'screens/all_screens.dart';
 
 // ─── Design Tokens ──────────────────────────────────────────────────────────
@@ -65,6 +66,7 @@ void main() async {
     systemNavigationBarColor: Tok.bgRoot,
     systemNavigationBarIconBrightness: Brightness.light,
   ));
+  await ServerConfig().load();
   runApp(const ProviderScope(child: AravindApp()));
 }
 

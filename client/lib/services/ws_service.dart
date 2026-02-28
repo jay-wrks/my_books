@@ -19,11 +19,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-
-// ===================== CHANGE THIS TO YOUR SERVER DOMAIN =====================
-const String _wsUrl = 'ws://192.168.29.81:3001';
-// For local dev: 'ws://10.0.2.2:3001' (Android emulator) or 'ws://localhost:3001'
-// =============================================================================
+import 'server_config.dart';
 
 class WsService {
   static final WsService _instance = WsService._();
@@ -84,7 +80,7 @@ class WsService {
     _channel = null;
 
     try {
-      _channel = WebSocketChannel.connect(Uri.parse(_wsUrl));
+      _channel = WebSocketChannel.connect(Uri.parse(ServerConfig().wsUrl));
       _subscription = _channel!.stream.listen(
         (raw) {
           if (gen != _generation) return; // stale channel
