@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { getDb } from '../../shared/db';
+import { pushToWsUser } from '../utils/ws-manager';
 import { v4 as uuid } from 'uuid';
 import crypto from 'crypto';
 
@@ -67,6 +68,9 @@ export default defineEventHandler(async (event) => {
         .run(uuid(), userId, paymentId, subId, amount);
 
       console.log(`[RAZORPAY] Subscription activated for user ${userId}, expires ${expiresAt}`);
+
+      // Push real-time event to connected Flutter client
+      try { await pushToWsUser(userId, 'subscriptionActivated', { status: 'active', expiresAt }); } catch {}
       break;
     }
 
@@ -75,6 +79,9 @@ export default defineEventHandler(async (event) => {
     case 'subscription.expired': {
       db.prepare("UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ? AND status = 'active'").run(userId);
       console.log(`[RAZORPAY] Subscription cancelled/halted for user ${userId}`);
+
+      // Push real-time event to connected Flutter client
+      try { await pushToWsUser(userId, 'subscriptionExpired', { status: 'none' }); } catch {}
       break;
     }
 

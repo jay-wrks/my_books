@@ -1,0 +1,10 @@
+# Python virtual environment
+.venv/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.iml

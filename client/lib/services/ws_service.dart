@@ -21,7 +21,7 @@ import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 // ===================== CHANGE THIS TO YOUR SERVER DOMAIN =====================
-const String _wsUrl = 'wss://yourdomain.com/ws';
+const String _wsUrl = 'ws://10.139.223.36:3001';
 // For local dev: 'ws://10.0.2.2:3001' (Android emulator) or 'ws://localhost:3001'
 // =============================================================================
 

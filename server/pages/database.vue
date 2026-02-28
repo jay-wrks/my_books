@@ -1,82 +1,95 @@
 <template>
   <div>
-    <h2 style="margin-bottom:1.5rem">🗄️ Database</h2>
+    <div class="page-header">
+      <div>
+        <h2>Database</h2>
+        <p class="page-description">Browse tables, run queries, and manage backups</p>
+      </div>
+    </div>
 
     <!-- Tables Overview -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0.75rem;margin-bottom:1.5rem">
+    <div class="table-selector mb-6">
       <button v-for="t in tables" :key="t.name" @click="loadTable(t.name)"
-        :style="{background: selectedTable === t.name ? '#059669' : '#111', border:'1px solid #333', borderRadius:'8px', padding:'0.75rem', textAlign:'left', cursor:'pointer', color:'#f3f4f6'}">
-        <div style="font-weight:600">{{ t.name }}</div>
-        <div style="font-size:0.8rem;color:#9ca3af">{{ t.rowCount }} rows</div>
+        :class="['table-btn', { active: selectedTable === t.name }]">
+        <span class="table-btn-name">{{ t.name }}</span>
+        <span class="table-btn-count">{{ t.rowCount }} rows</span>
       </button>
     </div>
 
     <!-- Table Data Viewer -->
-    <div v-if="tableData" style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222;margin-bottom:1.5rem;overflow-x:auto">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
-        <h4>{{ selectedTable }} ({{ tableData.total }} rows)</h4>
-        <div style="display:flex;gap:0.5rem">
-          <button v-if="tableData.page > 1" @click="loadTable(selectedTable!, tableData.page - 1)" style="padding:0.25rem 0.75rem;background:#333">← Prev</button>
-          <span style="padding:0.5rem;color:#9ca3af;font-size:0.85rem">Page {{ tableData.page }}</span>
-          <button v-if="tableData.total > tableData.page * tableData.limit" @click="loadTable(selectedTable!, tableData.page + 1)" style="padding:0.25rem 0.75rem;background:#333">Next →</button>
+    <div v-if="tableData" class="card mb-6">
+      <div class="card-header">
+        <h4>{{ selectedTable }} <span class="row-count">({{ tableData.total }} rows)</span></h4>
+        <div class="pagination" style="margin:0;border:none;padding:0">
+          <button v-if="tableData.page > 1" @click="loadTable(selectedTable!, tableData.page - 1)" class="btn-sm">Previous</button>
+          <span class="page-info">Page {{ tableData.page }}</span>
+          <button v-if="tableData.total > tableData.page * tableData.limit" @click="loadTable(selectedTable!, tableData.page + 1)" class="btn-sm">Next</button>
         </div>
       </div>
-      <table v-if="tableData.rows.length" style="font-size:0.8rem">
-        <thead><tr><th v-for="col in Object.keys(tableData.rows[0])" :key="col">{{ col }}</th></tr></thead>
-        <tbody>
-          <tr v-for="(row, i) in tableData.rows" :key="i">
-            <td v-for="col in Object.keys(row)" :key="col" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-              {{ row[col] }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else style="color:#6b7280">Table is empty</p>
+      <div class="table-container">
+        <table v-if="tableData.rows.length" class="table-compact">
+          <thead><tr><th v-for="col in Object.keys(tableData.rows[0])" :key="col">{{ col }}</th></tr></thead>
+          <tbody>
+            <tr v-for="(row, i) in tableData.rows" :key="i">
+              <td v-for="col in Object.keys(row)" :key="col" class="cell-truncate">
+                {{ row[col] }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty-state">Table is empty</div>
+      </div>
     </div>
 
     <!-- SQL Query -->
-    <div style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222;margin-bottom:1.5rem">
-      <h4 style="margin-bottom:1rem">🔍 SQL Query</h4>
-      <textarea v-model="sql" rows="3" placeholder="SELECT * FROM users LIMIT 10" style="font-family:monospace;font-size:0.85rem"></textarea>
-      <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
-        <button @click="runQuery(true)" style="background:#2563eb">▶ Run (Read-Only)</button>
-        <button @click="runQuery(false)" style="background:#dc2626">⚠ Run (Write)</button>
+    <div class="card mb-6">
+      <div class="card-header">
+        <h4>SQL Query</h4>
       </div>
-      <div v-if="queryResult" style="margin-top:1rem;overflow-x:auto">
-        <pre v-if="queryResult.error" style="color:#f87171;font-size:0.8rem">{{ queryResult.error }}</pre>
+      <textarea v-model="sql" rows="3" placeholder="SELECT * FROM users LIMIT 10" class="sql-input"></textarea>
+      <div class="flex gap-3 mt-3">
+        <button @click="runQuery(true)" class="btn-info">Run (Read-Only)</button>
+        <button @click="runQuery(false)" class="btn-danger">Run (Write)</button>
+      </div>
+      <div v-if="queryResult" class="mt-4">
+        <pre v-if="queryResult.error" class="query-error">{{ queryResult.error }}</pre>
         <div v-else-if="queryResult.rows">
-          <p style="color:#9ca3af;font-size:0.8rem;margin-bottom:0.5rem">{{ queryResult.count }} rows</p>
-          <table style="font-size:0.8rem">
-            <thead><tr><th v-for="col in queryResult.cols" :key="col">{{ col }}</th></tr></thead>
-            <tbody>
-              <tr v-for="(row, i) in queryResult.rows" :key="i">
-                <td v-for="col in queryResult.cols" :key="col">{{ row[col] }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <p class="query-count mb-3">{{ queryResult.count }} rows returned</p>
+          <div class="table-container">
+            <table class="table-compact">
+              <thead><tr><th v-for="col in queryResult.cols" :key="col">{{ col }}</th></tr></thead>
+              <tbody>
+                <tr v-for="(row, i) in queryResult.rows" :key="i">
+                  <td v-for="col in queryResult.cols" :key="col">{{ row[col] }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-        <p v-else style="color:#10b981;font-size:0.85rem">{{ queryResult.changes }} rows affected</p>
+        <p v-else class="query-success">{{ queryResult.changes }} rows affected</p>
       </div>
     </div>
 
     <!-- Backup & Restore -->
-    <div style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222">
-      <h4 style="margin-bottom:1rem">💾 Backup & Restore</h4>
-      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem">
-        <button @click="doBackup" :disabled="backingUp" style="background:#059669">
-          {{ backingUp ? '⏳ Backing up...' : '📤 Backup Now' }}
-        </button>
-        <button @click="loadBackups" style="background:#2563eb">🔄 Refresh List</button>
+    <div class="card">
+      <div class="card-header">
+        <h4>Backup & Restore</h4>
       </div>
-      <p v-if="backupMsg" :style="{color: backupMsg.ok ? '#10b981' : '#f87171', fontSize:'0.85rem', marginBottom:'1rem'}">{{ backupMsg.text }}</p>
+      <div class="flex gap-3 flex-wrap mb-4">
+        <button @click="doBackup" :disabled="backingUp" class="btn-primary">
+          {{ backingUp ? 'Backing up...' : 'Backup Now' }}
+        </button>
+        <button @click="loadBackups">Refresh List</button>
+      </div>
+      <p v-if="backupMsg" :class="['backup-msg', backupMsg.ok ? 'msg-success' : 'msg-error']">{{ backupMsg.text }}</p>
 
-      <div v-if="backups.length" style="max-height:300px;overflow-y:auto">
-        <div v-for="b in backups" :key="b" style="display:flex;justify-content:space-between;align-items:center;padding:0.5rem;border-bottom:1px solid #222">
-          <span style="font-size:0.85rem;color:#d1d5db">{{ b.replace(/-/g, ':').slice(0, 19) }}</span>
-          <button @click="doRestore(b)" style="font-size:0.75rem;padding:0.25rem 0.5rem;background:#dc2626">🔄 Restore</button>
+      <div v-if="backups.length" class="backup-list">
+        <div v-for="b in backups" :key="b" class="backup-item">
+          <span class="backup-name">{{ b.replace(/-/g, ':').slice(0, 19) }}</span>
+          <button @click="doRestore(b)" class="btn-sm btn-danger">Restore</button>
         </div>
       </div>
-      <p v-else style="color:#6b7280;font-size:0.85rem">No backups found</p>
+      <div v-else class="empty-state">No backups found</div>
     </div>
   </div>
 </template>
@@ -125,26 +138,155 @@ async function doBackup() {
   backupMsg.value = null;
   try {
     const res = await api('db/backup', { method: 'POST' });
-    backupMsg.value = { ok: true, text: `✅ Backup complete: ${res.totalRows} rows saved` };
+    backupMsg.value = { ok: true, text: `Backup complete: ${res.totalRows} rows saved` };
     loadBackups();
   } catch (e: any) {
-    backupMsg.value = { ok: false, text: `❌ ${e.data?.message || 'Backup failed'}` };
+    backupMsg.value = { ok: false, text: e.data?.message || 'Backup failed' };
   } finally {
     backingUp.value = false;
   }
 }
 
 async function doRestore(ts: string) {
-  if (!confirm(`⚠️ This will REPLACE all current data with backup from ${ts}. Continue?`)) return;
+  if (!confirm(`This will REPLACE all current data with backup from ${ts}. Continue?`)) return;
   try {
     const res = await api('db/restore', { method: 'POST', body: { timestamp: ts } });
-    backupMsg.value = { ok: true, text: `✅ Restored ${res.totalRows} rows from ${res.tables.length} tables` };
+    backupMsg.value = { ok: true, text: `Restored ${res.totalRows} rows from ${res.tables.length} tables` };
     loadTables();
     if (selectedTable.value) loadTable(selectedTable.value);
   } catch (e: any) {
-    backupMsg.value = { ok: false, text: `❌ ${e.data?.message || 'Restore failed'}` };
+    backupMsg.value = { ok: false, text: e.data?.message || 'Restore failed' };
   }
 }
 
 onMounted(() => { loadTables(); loadBackups(); });
 </script>
+
+<style scoped>
+.table-selector {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-3);
+}
+
+.table-btn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-4);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  text-align: left;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.table-btn:hover {
+  border-color: var(--color-border-default);
+  background: var(--color-bg-elevated);
+}
+
+.table-btn.active {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+}
+
+.table-btn-name {
+  font-weight: 600;
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+}
+
+.table-btn-count {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+
+.table-btn.active .table-btn-count {
+  color: var(--color-accent-text);
+}
+
+.table-container {
+  overflow-x: auto;
+}
+
+.table-compact {
+  font-size: 0.8125rem;
+}
+
+.cell-truncate {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-count {
+  font-weight: 400;
+  color: var(--color-text-tertiary);
+  font-size: 0.8125rem;
+}
+
+.sql-input {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+
+.query-error {
+  color: var(--color-danger);
+  background: var(--color-danger-subtle);
+  border-color: transparent;
+}
+
+.query-count {
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+}
+
+.query-success {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-success);
+}
+
+.backup-msg {
+  font-size: 0.8125rem;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-4);
+}
+
+.msg-success {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+
+.msg-error {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+
+.backup-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.backup-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.backup-item:last-child {
+  border-bottom: none;
+}
+
+.backup-name {
+  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+}
+</style>

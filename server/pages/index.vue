@@ -1,42 +1,67 @@
 <template>
   <div>
-    <h2 style="margin-bottom:1.5rem">📊 Dashboard</h2>
+    <div class="page-header">
+      <div>
+        <h2>Dashboard</h2>
+        <p class="page-description">System overview and key metrics</p>
+      </div>
+    </div>
 
     <!-- Stats Cards -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:2rem">
-      <div v-for="card in cards" :key="card.label" style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222">
-        <div style="font-size:0.85rem;color:#9ca3af">{{ card.label }}</div>
-        <div style="font-size:1.8rem;font-weight:700;color:#10b981;margin-top:0.25rem">{{ card.value }}</div>
+    <div class="grid grid-auto mb-7">
+      <div v-for="card in cards" :key="card.label" class="stat-card">
+        <div class="stat-label">{{ card.label }}</div>
+        <div class="stat-value">{{ card.value }}</div>
       </div>
     </div>
 
     <!-- Server Info -->
-    <div style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222;margin-bottom:2rem">
-      <h4 style="margin-bottom:1rem">🖥️ Server</h4>
-      <div v-if="stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0.75rem">
-        <div><span style="color:#9ca3af">CPU Cores:</span> {{ stats.server.cpuCount }}</div>
-        <div><span style="color:#9ca3af">RAM:</span> {{ stats.server.memUsedMb }}MB / {{ stats.server.memTotalMb }}MB</div>
-        <div><span style="color:#9ca3af">WS Conns:</span> {{ stats.wsConnections }}</div>
-        <div><span style="color:#9ca3af">Uptime:</span> {{ Math.round(stats.server.uptime / 3600) }}h</div>
+    <div class="card mb-6">
+      <div class="card-header">
+        <h4>Server</h4>
+      </div>
+      <div v-if="stats" class="grid grid-auto">
+        <div class="server-metric">
+          <span class="metric-label">CPU Cores</span>
+          <span class="metric-value">{{ stats.server.cpuCount }}</span>
+        </div>
+        <div class="server-metric">
+          <span class="metric-label">RAM</span>
+          <span class="metric-value">{{ stats.server.memUsedMb }}MB / {{ stats.server.memTotalMb }}MB</span>
+        </div>
+        <div class="server-metric">
+          <span class="metric-label">WS Connections</span>
+          <span class="metric-value">{{ stats.wsConnections }}</span>
+        </div>
+        <div class="server-metric">
+          <span class="metric-label">Uptime</span>
+          <span class="metric-value">{{ Math.round(stats.server.uptime / 3600) }}h</span>
+        </div>
       </div>
     </div>
 
     <!-- Recent Payments -->
-    <div style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222">
-      <h4 style="margin-bottom:1rem">💰 Recent Payments</h4>
-      <div style="overflow-x:auto">
+    <div class="card">
+      <div class="card-header">
+        <h4>Recent Payments</h4>
+      </div>
+      <div class="table-container">
         <table v-if="stats?.recentPayments?.length">
           <thead><tr><th>User</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead>
           <tbody>
             <tr v-for="p in stats.recentPayments" :key="p.id">
               <td>{{ p.user_email }}</td>
-              <td>₹{{ p.amount }}</td>
-              <td><span :style="{color: p.status === 'captured' ? '#10b981' : '#f87171'}">{{ p.status }}</span></td>
+              <td class="font-mono">₹{{ p.amount }}</td>
+              <td>
+                <span :class="['badge', p.status === 'captured' ? 'badge-success' : 'badge-danger']">
+                  {{ p.status }}
+                </span>
+              </td>
               <td>{{ new Date(p.created_at).toLocaleDateString() }}</td>
             </tr>
           </tbody>
         </table>
-        <p v-else style="color:#6b7280">No payments yet</p>
+        <div v-else class="empty-state">No payments yet</div>
       </div>
     </div>
   </div>
@@ -63,3 +88,37 @@ let timer: any;
 onMounted(() => { timer = setInterval(load, 10000); });
 onUnmounted(() => clearInterval(timer));
 </script>
+
+<style scoped>
+.table-container {
+  overflow-x: auto;
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+
+.server-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-md);
+}
+
+.metric-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.metric-value {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+</style>

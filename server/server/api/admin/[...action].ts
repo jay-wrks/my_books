@@ -142,28 +142,11 @@ export default defineEventHandler(async (event) => {
         `UPDATE deploy_history SET status = 'failed', log = COALESCE(log, '') || '\n--- STALE ---\nMarked as failed (stuck running)' WHERE status = 'running' AND datetime(created_at) < datetime('now', '-3 minutes')`
       ).run();
       const history = getDb().prepare('SELECT * FROM deploy_history ORDER BY created_at DESC LIMIT 30').all();
-      // List deploy_* branches from remote
-      let deployBranches: string[] = [];
-      try {
-        await execAsync('git fetch origin --prune', { cwd, timeout: 15000 });
-        const { stdout } = await execAsync('git branch -r --format="%(refname:short)"', { cwd });
-        deployBranches = stdout.trim().split('\n')
-          .map(b => b.replace('origin/', '').trim())
-          .filter(b => b.startsWith('deploy_'))
-          .sort().reverse();
-      } catch {}
-      return { branch, commit, history, deployBranches };
+      return { branch, commit, history };
     }
 
     // ===== DEPLOY — Stream deploy via SSE (ws-api only, no build) =====
     if (action === 'deploy/stream' && method === 'GET') {
-      const query = getQuery(event);
-      const type = (query.type as string) || 'deploy';
-      const rollbackBranch = query.branch as string || '';
-
-      if (type === 'rollback' && (!rollbackBranch || !/^deploy_\d{4}_\d{2}_\d{2}_\d+$/.test(rollbackBranch))) {
-        throw createError({ statusCode: 400, message: 'Invalid deploy branch name' });
-      }
 
       // SSE setup
       setResponseHeaders(event, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
@@ -182,11 +165,11 @@ export default defineEventHandler(async (event) => {
       const deployId = uuid();
       const startTime = Date.now();
       const cwd = process.cwd();
-      const branch = type === 'rollback' ? rollbackBranch : 'main';
+      const branch = 'main';
       const logs: string[] = [];
       const log = (msg: string) => { logs.push(msg); send(msg); };
 
-      db.prepare(`INSERT INTO deploy_history (id, branch, type, status) VALUES (?, ?, ?, 'running')`).run(deployId, branch, type);
+      db.prepare(`INSERT INTO deploy_history (id, branch, type, status) VALUES (?, ?, 'deploy', 'running')`).run(deployId, branch);
 
       try {
         // 1. Fetch latest from origin

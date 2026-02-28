@@ -1,93 +1,98 @@
 <template>
   <div>
-    <h2 style="margin-bottom:1.5rem">🚀 Deploy</h2>
+    <div class="page-header">
+      <div>
+        <h2>Deploy</h2>
+        <p class="page-description">Deploy and track deployment history</p>
+      </div>
+    </div>
 
     <!-- Current Status -->
-    <div style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222;margin-bottom:1.5rem">
-      <h4 style="margin-bottom:1rem">Current Status</h4>
-      <div v-if="status" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0.75rem">
-        <div><span style="color:#9ca3af">Branch:</span> <strong style="color:#10b981">{{ status.branch }}</strong></div>
-        <div><span style="color:#9ca3af">Commit:</span> <code>{{ status.commit }}</code></div>
+    <div class="card mb-6">
+      <div class="card-header">
+        <h4>Current Status</h4>
+      </div>
+      <div v-if="status" class="status-grid">
+        <div class="status-item">
+          <span class="status-label">Branch</span>
+          <span class="status-value accent">{{ status.branch }}</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Commit</span>
+          <code>{{ status.commit }}</code>
+        </div>
       </div>
     </div>
 
     <!-- Deploy from main -->
-    <div style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222;margin-bottom:1.5rem">
-      <h4 style="margin-bottom:0.5rem">Deploy from main</h4>
-      <p style="color:#9ca3af;font-size:0.85rem;margin-bottom:1rem">
+    <div class="card mb-6">
+      <div class="card-header">
+        <h4>Deploy from main</h4>
+      </div>
+      <p class="deploy-desc mb-4">
         Pulls latest <code>ws-api/</code> and <code>shared/</code> from <code>origin/main</code>, stops ws-api, copies files, restarts.
       </p>
-      <button type="button" @click.prevent="startDeploy('deploy')" :disabled="streaming" style="background:#059669;white-space:nowrap">
-        {{ streaming ? '⏳ Deploying...' : '🚀 Deploy Latest' }}
+      <button type="button" @click.prevent="startDeploy()" :disabled="streaming" class="btn-primary">
+        {{ streaming ? 'Deploying...' : 'Deploy Latest' }}
       </button>
     </div>
 
     <!-- Live Terminal -->
-    <div v-if="termLines.length" style="background:#0a0a0a;border-radius:12px;padding:1rem;border:1px solid #333;margin-bottom:1.5rem;font-family:'Fira Code','Cascadia Code','Consolas',monospace">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
-        <h4 style="font-size:0.9rem;color:#9ca3af">{{ streamDone ? (streamOk ? '✅ Deploy Complete' : '❌ Deploy Failed') : '⏳ Running...' }}</h4>
-        <button v-if="streamDone" type="button" @click="termLines = []" style="font-size:0.75rem;padding:0.2rem 0.5rem;background:#333">✕ Close</button>
+    <div v-if="termLines.length" class="card mb-6 terminal-card">
+      <div class="card-header">
+        <h4 :class="['terminal-status', streamDone ? (streamOk ? 'text-success' : 'text-danger') : 'text-muted']">
+          {{ streamDone ? (streamOk ? 'Deploy Complete' : 'Deploy Failed') : 'Running...' }}
+        </h4>
+        <button v-if="streamDone" type="button" @click="termLines = []" class="btn-sm btn-ghost">Close</button>
       </div>
-      <div ref="termEl" style="max-height:400px;overflow-y:auto;font-size:0.78rem;line-height:1.6;color:#d4d4d4">
-        <div v-for="(line, i) in termLines" :key="i" :style="{
-          color: line.startsWith('>>>') ? '#60a5fa'
-            : line.startsWith('✅') ? '#10b981'
-            : line.startsWith('❌') ? '#f87171'
-            : line.startsWith('Commit:') ? '#fbbf24'
-            : '#d4d4d4'
+      <div ref="termEl" class="terminal">
+        <div v-for="(line, i) in termLines" :key="i" :class="{
+          'line-cmd': line.startsWith('>>>'),
+          'line-ok': line.startsWith('Deploy Complete') || line.startsWith('Commit:') && false,
+          'line-err': line.startsWith('Connection lost') || line.startsWith('Error'),
+          'line-info': line.startsWith('Commit:'),
         }">{{ line }}</div>
-        <div v-if="!streamDone" style="color:#6b7280">▌</div>
+        <div v-if="!streamDone" class="cursor"></div>
       </div>
-    </div>
-
-    <!-- Rollback — deploy branches -->
-    <div style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222;margin-bottom:1.5rem">
-      <h4 style="margin-bottom:1rem">Rollback to Previous Deploy</h4>
-      <div v-if="status?.deployBranches?.length" style="display:flex;flex-direction:column;gap:0.5rem">
-        <div v-for="br in status.deployBranches" :key="br"
-          style="display:flex;align-items:center;justify-content:space-between;padding:0.6rem 0.75rem;background:#1a1a1a;border-radius:8px;border:1px solid #333">
-          <code style="color:#e5e7eb">{{ br }}</code>
-          <button type="button" @click.prevent="startDeploy('rollback', br)" :disabled="streaming"
-            style="background:#b45309;font-size:0.8rem;padding:0.3rem 0.75rem;white-space:nowrap">
-            ⏪ Rollback
-          </button>
-        </div>
-      </div>
-      <p v-else style="color:#6b7280">No deploy snapshots found</p>
     </div>
 
     <!-- Deploy History -->
-    <div style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222">
-      <h4 style="margin-bottom:1rem">Deploy History</h4>
-      <div style="overflow-x:auto">
+    <div class="card">
+      <div class="card-header">
+        <h4>Deploy History</h4>
+      </div>
+      <div class="table-container">
         <table v-if="status?.history?.length">
-          <thead><tr><th>Type</th><th>Branch</th><th>Deploy Branch</th><th>Commit</th><th>Status</th><th>Duration</th><th>Date</th><th>Log</th></tr></thead>
+          <thead><tr><th>Branch</th><th>Commit</th><th>Status</th><th>Duration</th><th>Date</th><th>Log</th></tr></thead>
           <tbody>
             <tr v-for="d in status.history" :key="d.id">
-              <td><span :style="{color: d.type === 'rollback' ? '#fbbf24' : '#60a5fa'}">{{ d.type || 'deploy' }}</span></td>
               <td>{{ d.branch }}</td>
-              <td><code v-if="d.deploy_branch">{{ d.deploy_branch }}</code><span v-else>—</span></td>
               <td><code>{{ d.commit_hash || '—' }}</code></td>
-              <td><span :style="{color: d.status === 'success' ? '#10b981' : d.status === 'failed' ? '#f87171' : '#fbbf24'}">
-                {{ d.status }}</span></td>
+              <td>
+                <span :class="['badge', d.status === 'success' ? 'badge-success' : d.status === 'failed' ? 'badge-danger' : 'badge-warning']">
+                  {{ d.status }}
+                </span>
+              </td>
               <td>{{ d.duration_ms ? (d.duration_ms / 1000).toFixed(1) + 's' : '—' }}</td>
               <td>{{ new Date(d.created_at).toLocaleString() }}</td>
-              <td><button v-if="d.log" type="button" @click="showLog = d.log" style="font-size:0.75rem;padding:0.25rem 0.5rem">📋 View</button></td>
+              <td>
+                <button v-if="d.log" type="button" @click="showLog = d.log" class="btn-sm btn-ghost">View</button>
+              </td>
             </tr>
           </tbody>
         </table>
-        <p v-else style="color:#6b7280">No deploys yet</p>
+        <div v-else class="empty-state">No deploys yet</div>
       </div>
     </div>
 
     <!-- Log Modal -->
-    <div v-if="showLog" @click="showLog = ''" style="position:fixed;inset:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:999;padding:2rem">
-      <div @click.stop style="background:#111;border-radius:12px;padding:1.5rem;max-width:800px;width:100%;max-height:80vh;overflow:auto;border:1px solid #333">
-        <div style="display:flex;justify-content:space-between;margin-bottom:1rem">
+    <div v-if="showLog" @click="showLog = ''" class="modal-overlay">
+      <div @click.stop class="modal-content">
+        <div class="modal-header">
           <h4>Deploy Log</h4>
-          <button type="button" @click="showLog = ''" style="background:#333;padding:0.25rem 0.75rem">✕</button>
+          <button type="button" @click="showLog = ''" class="btn-sm btn-ghost">Close</button>
         </div>
-        <pre style="white-space:pre-wrap;font-size:0.8rem;color:#d1d5db">{{ showLog }}</pre>
+        <pre>{{ showLog }}</pre>
       </div>
     </div>
   </div>
@@ -109,16 +114,13 @@ async function load() {
   try { status.value = await api('deploy/status'); } catch {}
 }
 
-function startDeploy(type: 'deploy' | 'rollback', branch?: string) {
-  if (type === 'rollback' && !confirm(`Rollback to ${branch}?\n\nThis will stop ws-api, restore files from that branch, and restart.`)) return;
-
+function startDeploy() {
   streaming.value = true;
   streamDone.value = false;
   streamOk.value = false;
-  termLines.value = [`$ ${type === 'rollback' ? `rollback → ${branch}` : 'deploy from main'}`, ''];
+  termLines.value = ['$ deploy from main', ''];
 
-  let url = `/api/admin/deploy/stream?type=${type}`;
-  if (branch) url += `&branch=${encodeURIComponent(branch)}`;
+  const url = '/api/admin/deploy/stream';
 
   const es = new EventSource(url);
 
@@ -140,7 +142,7 @@ function startDeploy(type: 'deploy' | 'rollback', branch?: string) {
 
   es.onerror = () => {
     if (!streamDone.value) {
-      termLines.value.push('', '❌ Connection lost');
+      termLines.value.push('', 'Connection lost');
       streamDone.value = true;
       streamOk.value = false;
       streaming.value = false;
@@ -151,3 +153,67 @@ function startDeploy(type: 'deploy' | 'rollback', branch?: string) {
 
 onMounted(load);
 </script>
+
+<style scoped>
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-4);
+}
+
+.status-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.status-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-tertiary);
+}
+
+.status-value {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.status-value.accent {
+  color: var(--color-accent);
+}
+
+.deploy-desc {
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+}
+
+.terminal-card {
+  padding: 0;
+}
+
+.terminal-card .card-header {
+  padding: var(--space-4) var(--space-6);
+  margin-bottom: 0;
+}
+
+.terminal-card .terminal {
+  border: none;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+.terminal-status {
+  font-size: 0.8125rem;
+}
+
+.text-success { color: var(--color-success); }
+.text-danger { color: var(--color-danger); }
+.text-muted { color: var(--color-text-tertiary); }
+
+.table-container {
+  overflow-x: auto;
+}
+</style>

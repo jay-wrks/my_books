@@ -1,81 +1,112 @@
 <template>
   <div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem">
-      <h2>📚 PDFs</h2>
-      <button @click="showForm = !showForm" style="background:#059669">{{ showForm ? '✕ Cancel' : '+ Add PDF' }}</button>
+    <div class="page-header">
+      <div>
+        <h2>PDFs</h2>
+        <p class="page-description">Manage study material documents</p>
+      </div>
+      <button @click="showForm = !showForm" :class="showForm ? '' : 'btn-primary'">
+        {{ showForm ? 'Cancel' : 'Add PDF' }}
+      </button>
     </div>
 
     <!-- Add/Edit Form -->
-    <div v-if="showForm" style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222;margin-bottom:1.5rem">
-      <h4 style="margin-bottom:1rem">{{ editingId ? 'Edit PDF' : 'Add PDF' }}</h4>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
-        <label>Title <input v-model="form.title" required /></label>
-        <label>Class Level
+    <div v-if="showForm" class="card mb-6">
+      <h4 class="mb-5">{{ editingId ? 'Edit PDF' : 'New PDF' }}</h4>
+      <div class="form-grid-2">
+        <label>
+          <span>Title</span>
+          <input v-model="form.title" required placeholder="e.g. Chapter 1 - Introduction" />
+        </label>
+        <label>
+          <span>Class Level</span>
           <select v-model="form.classLevel">
             <option v-for="c in 12" :key="c" :value="c">Class {{ c }}</option>
           </select>
         </label>
-        <label>Subject
+        <label>
+          <span>Subject</span>
           <select v-model="form.subjectId">
             <option v-for="s in subjects" :key="s.id" :value="s.id">{{ s.name }}</option>
           </select>
         </label>
-        <label>Page Count <input v-model.number="form.pageCount" type="number" min="0" /></label>
-        <label style="grid-column:1/-1">Description <textarea v-model="form.description" rows="2"></textarea></label>
-        <label style="grid-column:1/-1">Firebase Storage Path
-          <input v-model="form.firebasePath" placeholder="pdfs/class5/math/chapter1.pdf" />
-          <small style="color:#6b7280">Upload the PDF to Firebase Storage first, then paste the path here</small>
+        <label>
+          <span>Page Count</span>
+          <input v-model.number="form.pageCount" type="number" min="0" />
         </label>
-        <label>Thumbnail URL <input v-model="form.thumbnailUrl" placeholder="https://..." /></label>
-        <label>File Size (KB) <input v-model.number="form.fileSizeKb" type="number" min="0" /></label>
+        <label class="span-full">
+          <span>Description</span>
+          <textarea v-model="form.description" rows="2" placeholder="Brief description of this PDF..."></textarea>
+        </label>
+        <label class="span-full">
+          <span>Firebase Storage Path</span>
+          <input v-model="form.firebasePath" placeholder="pdfs/class5/math/chapter1.pdf" />
+          <small>Upload the PDF to Firebase Storage first, then paste the path here</small>
+        </label>
+        <label>
+          <span>Thumbnail URL</span>
+          <input v-model="form.thumbnailUrl" placeholder="https://..." />
+        </label>
+        <label>
+          <span>File Size (KB)</span>
+          <input v-model.number="form.fileSizeKb" type="number" min="0" />
+        </label>
       </div>
-      <div style="display:flex;gap:0.75rem;margin-top:1rem">
-        <button @click="savePdf" style="background:#059669">{{ editingId ? 'Update' : 'Create' }}</button>
-        <button @click="resetForm" style="background:#333">Cancel</button>
+      <div class="flex gap-3 mt-4">
+        <button @click="savePdf" class="btn-primary">{{ editingId ? 'Update' : 'Create' }}</button>
+        <button @click="resetForm">Cancel</button>
       </div>
-      <p v-if="formMsg" :style="{color: formMsg.ok ? '#10b981' : '#f87171', marginTop:'0.5rem', fontSize:'0.85rem'}">{{ formMsg.text }}</p>
+      <p v-if="formMsg" :class="['form-msg', formMsg.ok ? 'msg-success' : 'msg-error']">{{ formMsg.text }}</p>
     </div>
 
     <!-- Filters -->
-    <div style="display:flex;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
-      <select v-model="filterClass" @change="loadPdfs" style="width:auto">
+    <div class="filters mb-5">
+      <select v-model="filterClass" @change="loadPdfs" class="filter-select">
         <option :value="0">All Classes</option>
         <option v-for="c in 12" :key="c" :value="c">Class {{ c }}</option>
       </select>
-      <select v-model="filterSubject" @change="loadPdfs" style="width:auto">
+      <select v-model="filterSubject" @change="loadPdfs" class="filter-select">
         <option value="">All Subjects</option>
         <option v-for="s in subjects" :key="s.id" :value="s.id">{{ s.name }}</option>
       </select>
     </div>
 
     <!-- PDFs Table -->
-    <div style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222;overflow-x:auto">
-      <table v-if="pdfs.length" style="font-size:0.85rem">
-        <thead><tr><th>Title</th><th>Class</th><th>Subject</th><th>Pages</th><th>Size</th><th>Active</th><th>Actions</th></tr></thead>
-        <tbody>
-          <tr v-for="p in pdfs" :key="p.id">
-            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ p.title }}</td>
-            <td>{{ p.class_level }}</td>
-            <td>{{ p.subject_name }}</td>
-            <td>{{ p.page_count }}</td>
-            <td>{{ p.file_size_kb ? (p.file_size_kb / 1024).toFixed(1) + 'MB' : '—' }}</td>
-            <td><span :style="{color: p.is_active ? '#10b981' : '#f87171'}">{{ p.is_active ? '✅' : '❌' }}</span></td>
-            <td style="display:flex;gap:0.25rem">
-              <button @click="editPdf(p)" style="font-size:0.75rem;padding:0.25rem 0.5rem;background:#2563eb">✏️</button>
-              <button @click="toggleActive(p)" style="font-size:0.75rem;padding:0.25rem 0.5rem;background:#6b7280">
-                {{ p.is_active ? '🔒' : '🔓' }}
-              </button>
-              <button @click="deletePdf(p.id)" style="font-size:0.75rem;padding:0.25rem 0.5rem;background:#dc2626">🗑️</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else style="color:#6b7280">No PDFs found</p>
+    <div class="card">
+      <div class="table-container">
+        <table v-if="pdfs.length">
+          <thead><tr><th>Title</th><th>Class</th><th>Subject</th><th>Pages</th><th>Size</th><th>Active</th><th>Actions</th></tr></thead>
+          <tbody>
+            <tr v-for="p in pdfs" :key="p.id">
+              <td class="cell-title">{{ p.title }}</td>
+              <td>{{ p.class_level }}</td>
+              <td>{{ p.subject_name }}</td>
+              <td>{{ p.page_count }}</td>
+              <td class="text-mono">{{ p.file_size_kb ? (p.file_size_kb / 1024).toFixed(1) + 'MB' : '—' }}</td>
+              <td>
+                <span :class="['badge', p.is_active ? 'badge-success' : 'badge-danger']">
+                  {{ p.is_active ? 'Active' : 'Inactive' }}
+                </span>
+              </td>
+              <td>
+                <div class="flex gap-2">
+                  <button @click="editPdf(p)" class="btn-sm btn-info">Edit</button>
+                  <button @click="toggleActive(p)" class="btn-sm">
+                    {{ p.is_active ? 'Disable' : 'Enable' }}
+                  </button>
+                  <button @click="deletePdf(p.id)" class="btn-sm btn-danger">Delete</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty-state">No PDFs found</div>
+      </div>
 
-      <div v-if="pdfData?.total > pdfData?.limit" style="display:flex;gap:0.5rem;margin-top:1rem;justify-content:center">
-        <button v-if="pdfPage > 1" @click="pdfPage--;loadPdfs()" style="padding:0.25rem 0.75rem;background:#333">← Prev</button>
-        <span style="padding:0.5rem;color:#9ca3af;font-size:0.85rem">Page {{ pdfPage }} of {{ Math.ceil(pdfData.total / pdfData.limit) }}</span>
-        <button v-if="pdfData.total > pdfPage * pdfData.limit" @click="pdfPage++;loadPdfs()" style="padding:0.25rem 0.75rem;background:#333">Next →</button>
+      <div v-if="pdfData?.total > pdfData?.limit" class="pagination">
+        <button v-if="pdfPage > 1" @click="pdfPage--;loadPdfs()" class="btn-sm">Previous</button>
+        <span class="page-info">Page {{ pdfPage }} of {{ Math.ceil(pdfData.total / pdfData.limit) }}</span>
+        <button v-if="pdfData.total > pdfPage * pdfData.limit" @click="pdfPage++;loadPdfs()" class="btn-sm">Next</button>
       </div>
     </div>
   </div>
@@ -123,10 +154,10 @@ async function savePdf() {
   try {
     if (editingId.value) {
       await api(`pdfs/${editingId.value}`, { method: 'PUT', body: form });
-      formMsg.value = { ok: true, text: '✅ PDF updated' };
+      formMsg.value = { ok: true, text: 'PDF updated' };
     } else {
       await api('pdfs', { method: 'POST', body: form });
-      formMsg.value = { ok: true, text: '✅ PDF created' };
+      formMsg.value = { ok: true, text: 'PDF created' };
     }
     loadPdfs();
     setTimeout(resetForm, 1000);
@@ -159,3 +190,67 @@ async function loadSubjects() {
 
 onMounted(() => { loadPdfs(); loadSubjects(); });
 </script>
+
+<style scoped>
+.form-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.span-full {
+  grid-column: 1 / -1;
+}
+
+.form-msg {
+  font-size: 0.8125rem;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  margin-top: var(--space-3);
+}
+
+.msg-success {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+
+.msg-error {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+
+.filters {
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.filter-select {
+  width: auto;
+  min-width: 150px;
+}
+
+.table-container {
+  overflow-x: auto;
+}
+
+.cell-title {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.text-mono {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+@media (max-width: 768px) {
+  .form-grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

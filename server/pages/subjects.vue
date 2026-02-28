@@ -1,37 +1,59 @@
 <template>
   <div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem">
-      <h2>📖 Subjects</h2>
-      <button @click="showForm = !showForm" style="background:#059669">{{ showForm ? '✕ Cancel' : '+ Add Subject' }}</button>
+    <div class="page-header">
+      <div>
+        <h2>Subjects</h2>
+        <p class="page-description">Manage academic subjects and categories</p>
+      </div>
+      <button @click="showForm = !showForm" :class="showForm ? '' : 'btn-primary'">
+        {{ showForm ? 'Cancel' : 'Add Subject' }}
+      </button>
     </div>
 
     <!-- Form -->
-    <div v-if="showForm" style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222;margin-bottom:1.5rem">
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem">
-        <label>Name <input v-model="form.name" required /></label>
-        <label>Icon Name <input v-model="form.iconName" placeholder="book" /></label>
-        <label>Display Order <input v-model.number="form.displayOrder" type="number" /></label>
+    <div v-if="showForm" class="card mb-6">
+      <h4 class="mb-5">{{ editId ? 'Edit Subject' : 'New Subject' }}</h4>
+      <div class="form-grid">
+        <label>
+          <span>Name</span>
+          <input v-model="form.name" required placeholder="e.g. Mathematics" />
+        </label>
+        <label>
+          <span>Icon Name</span>
+          <input v-model="form.iconName" placeholder="book" />
+        </label>
+        <label>
+          <span>Display Order</span>
+          <input v-model.number="form.displayOrder" type="number" />
+        </label>
       </div>
-      <button @click="save" style="background:#059669;margin-top:1rem">{{ editId ? 'Update' : 'Create' }}</button>
+      <div class="mt-4">
+        <button @click="save" class="btn-primary">{{ editId ? 'Update Subject' : 'Create Subject' }}</button>
+      </div>
     </div>
 
     <!-- List -->
-    <div style="background:#111;border-radius:12px;padding:1.25rem;border:1px solid #222;overflow-x:auto">
-      <table v-if="subjects.length" style="font-size:0.85rem">
-        <thead><tr><th>Order</th><th>Name</th><th>Icon</th><th>ID</th><th>Actions</th></tr></thead>
-        <tbody>
-          <tr v-for="s in subjects" :key="s.id">
-            <td>{{ s.display_order }}</td>
-            <td>{{ s.name }}</td>
-            <td>{{ s.icon_name }}</td>
-            <td style="color:#6b7280">{{ s.id }}</td>
-            <td style="display:flex;gap:0.25rem">
-              <button @click="edit(s)" style="font-size:0.75rem;padding:0.25rem 0.5rem;background:#2563eb">✏️</button>
-              <button @click="del(s.id)" style="font-size:0.75rem;padding:0.25rem 0.5rem;background:#dc2626">🗑️</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="card">
+      <div class="table-container">
+        <table v-if="subjects.length">
+          <thead><tr><th>Order</th><th>Name</th><th>Icon</th><th>ID</th><th>Actions</th></tr></thead>
+          <tbody>
+            <tr v-for="s in subjects" :key="s.id">
+              <td>{{ s.display_order }}</td>
+              <td class="text-primary">{{ s.name }}</td>
+              <td><code>{{ s.icon_name }}</code></td>
+              <td class="text-muted">{{ s.id }}</td>
+              <td>
+                <div class="flex gap-2">
+                  <button @click="edit(s)" class="btn-sm btn-info">Edit</button>
+                  <button @click="del(s.id)" class="btn-sm btn-danger">Delete</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty-state">No subjects created yet</div>
+      </div>
     </div>
   </div>
 </template>
@@ -72,3 +94,32 @@ async function load() {
 }
 onMounted(load);
 </script>
+
+<style scoped>
+.table-container {
+  overflow-x: auto;
+}
+
+.text-primary {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.text-muted {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-4);
+}
+
+@media (max-width: 768px) {
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

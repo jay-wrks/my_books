@@ -1,6 +1,8 @@
 export default defineNuxtConfig({
   ssr: false, // Full SPA — minimal memory on EC2
 
+  css: ['~/assets/css/design-system.css'],
+
   runtimeConfig: {
     jwtSecret: process.env.JWT_SECRET,
     adminEmail: process.env.ADMIN_EMAIL,
@@ -20,9 +22,6 @@ export default defineNuxtConfig({
     head: {
       title: 'Aravind Admin',
       meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }],
-      link: [
-        { rel: 'stylesheet', href: 'https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css' },
-      ],
       script: [
         { src: 'https://checkout.razorpay.com/v1/checkout.js', defer: true },
       ],

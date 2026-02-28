@@ -10,7 +10,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_windowmanager/flutter_windowmanager.dart';
+import 'package:screen_protector/screen_protector.dart';
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/ws_service.dart';
@@ -18,7 +18,7 @@ import '../services/auth_service.dart';
 import '../services/pdf_service.dart';
 
 // ===================== CHANGE THIS =====================
-const String _serverDomain = 'https://yourdomain.com';
+const String _serverDomain = 'http://10.139.223.36:3000';
 // =======================================================
 
 final _ws = WsService();
@@ -237,11 +237,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   List<dynamic> _subjects = [];
   List<dynamic> _classes = [];
   bool _loading = true;
+  bool _wsConnected = true;
+  StreamSubscription? _connSub;
 
   @override
   void initState() {
     super.initState();
+    _wsConnected = _ws.isConnected;
+    _connSub = _ws.connectionState.listen((connected) {
+      if (mounted) setState(() => _wsConnected = connected);
+    });
     _load();
+  }
+
+  @override
+  void dispose() {
+    _connSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -284,28 +296,49 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           IconButton(icon: const Icon(Icons.person_outline), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen()))),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator(color: Color(0xFF10B981)))
-          : RefreshIndicator(
-              onRefresh: () async {
-                await _load();
-                ref.read(authProvider.notifier).refreshSubscription();
-              },
-              child: Column(
+      body: Column(
+        children: [
+          // Connection status banner
+          if (!_wsConnected)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              color: Colors.red.shade900,
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Tab bar
-                  Row(
-                    children: [
-                      _tabButton('By Class', 0),
-                      _tabButton('By Subject', 1),
-                    ],
-                  ),
-                  Expanded(
-                    child: _tab == 0 ? _buildClassView() : _buildSubjectView(),
-                  ),
+                  Icon(Icons.cloud_off, size: 14, color: Colors.white70),
+                  SizedBox(width: 6),
+                  Text('No connection — retrying...', style: TextStyle(fontSize: 12, color: Colors.white70)),
                 ],
               ),
             ),
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator(color: Color(0xFF10B981)))
+                : RefreshIndicator(
+                    onRefresh: () async {
+                      await _load();
+                      ref.read(authProvider.notifier).refreshSubscription();
+                    },
+                    child: Column(
+                      children: [
+                        // Tab bar
+                        Row(
+                          children: [
+                            _tabButton('By Class', 0),
+                            _tabButton('By Subject', 1),
+                          ],
+                        ),
+                        Expanded(
+                          child: _tab == 0 ? _buildClassView() : _buildSubjectView(),
+                        ),
+                      ],
+                    ),
+                  ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -328,11 +361,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Widget _buildClassView() {
     if (_classes.isEmpty) return const Center(child: Text('No classes available', style: TextStyle(color: Colors.grey)));
+    // Build sorted list of all class levels from actual data
+    final classLevels = _classes.map<int>((c) => c['class_level'] as int).toList()..sort();
     return ListView.builder(
       padding: const EdgeInsets.all(12),
-      itemCount: 12,
+      itemCount: classLevels.length,
       itemBuilder: (context, i) {
-        final classLevel = i + 1;
+        final classLevel = classLevels[i];
         final classData = _classes.firstWhere((c) => c['class_level'] == classLevel, orElse: () => null);
         final count = classData?['pdf_count'] ?? 0;
         return Card(
@@ -466,8 +501,30 @@ class _PdfListScreenState extends ConsumerState<PdfListScreen> {
                     ? const Center(child: Text('No PDFs found', style: TextStyle(color: Colors.grey)))
                     : ListView.builder(
                         padding: const EdgeInsets.all(12),
-                        itemCount: _pdfs.length,
-                        itemBuilder: (context, i) => _pdfCard(_pdfs[i]),
+                        itemCount: _pdfs.length + 1, // +1 for pagination footer
+                        itemBuilder: (context, i) {
+                          if (i < _pdfs.length) return _pdfCard(_pdfs[i]);
+                          // Pagination footer
+                          final totalPages = (_total / 30).ceil();
+                          if (totalPages <= 1) return const SizedBox.shrink();
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                IconButton(
+                                  onPressed: _page > 1 ? () { _page--; _loadPdfs(); } : null,
+                                  icon: const Icon(Icons.chevron_left),
+                                ),
+                                Text('Page $_page of $totalPages', style: const TextStyle(color: Colors.grey)),
+                                IconButton(
+                                  onPressed: _page < totalPages ? () { _page++; _loadPdfs(); } : null,
+                                  icon: const Icon(Icons.chevron_right),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
                       ),
           ),
         ],
@@ -567,13 +624,13 @@ class _PdfViewerScreenState extends ConsumerState<PdfViewerScreen> {
 
   Future<void> _enableSecurity() async {
     try {
-      await FlutterWindowManager.addFlags(FlutterWindowManager.FLAG_SECURE);
-    } catch (_) {} // Fails on iOS, handled separately
+      await ScreenProtector.protectDataLeakageOn();
+    } catch (_) {}
   }
 
   Future<void> _disableSecurity() async {
     try {
-      await FlutterWindowManager.clearFlags(FlutterWindowManager.FLAG_SECURE);
+      await ScreenProtector.protectDataLeakageOff();
     } catch (_) {}
   }
 
@@ -594,7 +651,15 @@ class _PdfViewerScreenState extends ConsumerState<PdfViewerScreen> {
       final bytes = await _pdf.downloadAndCache(widget.pdfId, url);
       if (mounted) setState(() { _pdfBytes = bytes; _loading = false; });
     } catch (e) {
-      if (mounted) setState(() { _error = e.toString(); _loading = false; });
+      final msg = e.toString();
+      if (mounted) {
+        setState(() {
+          _error = msg.contains('SUBSCRIPTION_REQUIRED')
+              ? 'A subscription is required to view this PDF.'
+              : msg;
+          _loading = false;
+        });
+      }
     }
   }
 
@@ -808,23 +873,43 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   List<dynamic> _results = [];
   bool _loading = false;
   bool _searched = false;
+  bool _loadingMore = false;
+  int _page = 1;
+  int _total = 0;
+  String _lastQuery = '';
   Timer? _debounce;
 
   void _search(String query) {
     _debounce?.cancel();
     if (query.length < 2) {
-      setState(() { _results = []; _searched = false; });
+      setState(() { _results = []; _searched = false; _page = 1; _total = 0; });
       return;
     }
     _debounce = Timer(const Duration(milliseconds: 400), () async {
-      setState(() => _loading = true);
+      setState(() { _loading = true; _page = 1; });
+      _lastQuery = query;
       try {
-        final res = await _ws.send('searchPdfs', {'query': query});
+        final res = await _ws.send('searchPdfs', {'query': query, 'page': 1, 'limit': 30});
         _results = res['pdfs'] as List? ?? [];
+        _total = res['total'] as int? ?? 0;
         _searched = true;
       } catch (_) {}
       if (mounted) setState(() => _loading = false);
     });
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore) return;
+    setState(() => _loadingMore = true);
+    _page++;
+    try {
+      final res = await _ws.send('searchPdfs', {'query': _lastQuery, 'page': _page, 'limit': 30});
+      final more = res['pdfs'] as List? ?? [];
+      _results = [..._results, ...more];
+    } catch (_) {
+      _page--;
+    }
+    if (mounted) setState(() => _loadingMore = false);
   }
 
   @override
@@ -850,8 +935,22 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                   ? const Center(child: Text('No results found', style: TextStyle(color: Colors.grey)))
                   : ListView.builder(
                       padding: const EdgeInsets.all(12),
-                      itemCount: _results.length,
+                      itemCount: _results.length + (_results.length < _total ? 1 : 0),
                       itemBuilder: (context, i) {
+                        if (i >= _results.length) {
+                          // Load more button
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            child: Center(
+                              child: _loadingMore
+                                  ? const CircularProgressIndicator(color: Color(0xFF10B981), strokeWidth: 2)
+                                  : TextButton(
+                                      onPressed: _loadMore,
+                                      child: const Text('Load more results', style: TextStyle(color: Color(0xFF10B981))),
+                                    ),
+                            ),
+                          );
+                        }
                         final pdf = _results[i];
                         return Card(
                           margin: const EdgeInsets.only(bottom: 8),
@@ -955,6 +1054,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             const SizedBox(height: 16),
 
             // Actions
+            _profileTile(Icons.edit_outlined, 'Edit Profile', () => _showEditProfile(context)),
             _profileTile(Icons.refresh, 'Refresh Subscription', () async {
               await ref.read(authProvider.notifier).refreshSubscription();
               if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Subscription status refreshed')));
@@ -991,6 +1091,47 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         title: Text(label),
         trailing: const Icon(Icons.chevron_right, color: Colors.grey),
         onTap: onTap,
+      ),
+    );
+  }
+
+  void _showEditProfile(BuildContext context) {
+    final auth = ref.read(authProvider);
+    final nameC = TextEditingController(text: auth.name ?? '');
+    final phoneC = TextEditingController(text: auth.phone ?? '');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF111111),
+        title: const Text('Edit Profile'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: nameC, decoration: const InputDecoration(hintText: 'Full Name')),
+            const SizedBox(height: 12),
+            TextField(controller: phoneC, keyboardType: TextInputType.phone, decoration: const InputDecoration(hintText: 'Phone')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () async {
+              try {
+                await ref.read(authProvider.notifier).updateProfile(
+                  name: nameC.text.trim(),
+                  phone: phoneC.text.trim(),
+                );
+                if (ctx.mounted) {
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Profile updated!')));
+                }
+              } catch (e) {
+                if (ctx.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Colors.red));
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
       ),
     );
   }
